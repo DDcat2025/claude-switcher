@@ -1,12 +1,15 @@
 #!/bin/bash
 # Claude 账号切换器 - Linux 核心脚本
-# 用法: claude-switch.sh checkdetail|status|fix|switch A|B|menu
+# 用法: claude-switch.sh checkdetail|status|fix|switch A|B|menu  (隐藏: write-merge-rules 供安装器调用)
 set -u
 export LC_ALL=en_US.UTF-8
 
 # ============ 安装时可配置项(安装器自动改写) ============
-TZ_TARGET="America/New_York"     # 锁定时区,与出口IP城市一致
-PROXY_GROUP="GLOBAL"             # Clash 代理组名
+PROXY_MODE="clash-verge"       # 代理客户端: clash-verge|mihomo|sing-box|v2raya|nekobox|hiddify|wireguard|other|auto
+PROXY_GROUP="GLOBAL"           # Clash 代理组名(安装时自动探测)
+COUNTRY_TARGET="US"            # 目标出口国家(安装时按出口自动识别)
+TZ_TARGET="America/New_York"   # 锁定时区,应与出口IP所在国家一致
+LOCALE_TARGET="en_US"          # 锁定地区格式
 # =======================================================
 
 BASE="$HOME/.claude-switcher"
@@ -15,12 +18,59 @@ DATA="$HOME/.config/google-chrome"   # Web 版登录态目录(Chrome)
 LOG="$BASE/claude-switch.log"
 CLASH_DIR="$HOME/.config/io.github.clash-verge-rev.clash-verge-rev"
 [ -d "$HOME/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev" ] && CLASH_DIR="$HOME/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev"
+ROUTE_MISSED=""
 mkdir -p "$BASE/accounts"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $1" >>"$LOG"; }
 
+# TUN 在线判定:存在 fake-ip 网段地址即视为 TUN 已接管(兼容各种 TUN 设备名)
 tun_up() { ip addr 2>/dev/null | grep -q 'inet 198\.18\.'; }
-core_up() { pgrep -f 'verge-mihomo|mihomo' >/dev/null 2>&1; }
+
+# 通用虚拟网卡兜底:tun/utun/wg/tailscale 接口存在且 UP(WireGuard 等无 fake-ip 网段的场景)
+tun_any() { ip link show 2>/dev/null | grep -E '^[0-9]+: (tun|utun|wg|tailscale)[0-9]*:' | grep -q 'UP'; }
+
+# 代理链路在线:fake-ip 或任一通用虚拟网卡
+net_up() { tun_up || tun_any; }
+
+# 代理客户端显示名(供检查细节输出)
+proxy_name() {
+    case "$PROXY_MODE" in
+        clash-verge) echo "Clash Verge" ;;
+        mihomo)      echo "mihomo" ;;
+        sing-box)    echo "sing-box" ;;
+        v2raya)      echo "V2RayA" ;;
+        nekobox)     echo "NekoBox" ;;
+        hiddify)     echo "Hiddify" ;;
+        wireguard)   echo "WireGuard" ;;
+        other)       echo "其他代理" ;;
+        auto)        echo "代理客户端" ;;
+        *)           echo "$PROXY_MODE" ;;
+    esac
+}
+
+# WireGuard 在线判定:存在活动的 wg-quick@ 服务(通配符加引号,交给 systemctl 自己展开)
+wg_up() { systemctl list-units --type=service --state=active 'wg-quick@*' 2>/dev/null | grep -q 'wg-quick@'; }
+
+# 代理内核在线判定:按安装时识别的客户端分派;other 看虚拟网卡,auto 任一命中即活
+proxy_alive() {
+    case "$PROXY_MODE" in
+        clash-verge) pgrep -f 'verge-mihomo|mihomo' >/dev/null 2>&1 ;;
+        mihomo)      pgrep -f mihomo >/dev/null 2>&1 ;;
+        sing-box)    pgrep -f sing-box >/dev/null 2>&1 ;;
+        v2raya)      pgrep -f v2raya >/dev/null 2>&1 ;;
+        nekobox)     pgrep -f 'nekobox|nekoray' >/dev/null 2>&1 ;;
+        hiddify)     pgrep -f hiddify >/dev/null 2>&1 ;;
+        wireguard)   wg_up ;;
+        other)       net_up ;;
+        auto)        pgrep -f 'verge-mihomo|mihomo' >/dev/null 2>&1 \
+                     || pgrep -f sing-box >/dev/null 2>&1 \
+                     || pgrep -f v2raya >/dev/null 2>&1 \
+                     || pgrep -f 'nekobox|nekoray' >/dev/null 2>&1 \
+                     || pgrep -f hiddify >/dev/null 2>&1 \
+                     || wg_up ;;
+        *)           pgrep -f 'verge-mihomo|mihomo' >/dev/null 2>&1 ;;
+    esac
+}
 
 dns_query() {
     # dig → nslookup → getent 逐级回退
@@ -37,32 +87,95 @@ egress() {
 
 webrtc_test() { python3 "$BASE/stun-probe.py" 2>/dev/null; }
 
+# 置顶规则配置检查(仅 Clash Verge):合并配置里是否含置顶规则
+merge_ok() {
+    grep -q "DOMAIN-SUFFIX,claude.ai,$PROXY_GROUP" "$CLASH_DIR/clash-verge.yaml" 2>/dev/null
+}
+
+# 置顶规则行为检测:三个生态域名全部解析到 fake-ip 段(198.18.x.x)即视为已置顶;未命中域名记入 ROUTE_MISSED
+route_ok() {
+    ROUTE_MISSED=""
+    local d a
+    for d in claude.ai api.anthropic.com claudeusercontent.com; do
+        a=$(dns_query "$d")
+        case "$a" in
+            198.18.*) ;;
+            *) ROUTE_MISSED="$ROUTE_MISSED $d" ;;
+        esac
+    done
+    [ -z "$ROUTE_MISSED" ]
+}
+
+# IP 审查:记录出口IP并统计最近48h内不同IP个数(账号画像风险指标)
+iphist_count() {
+    [ -z "$1" ] && { echo 0; return; }
+    local HIST="$BASE/iphistory.log"
+    local now=$(date +%s)
+    echo "$1 $now" >>"$HIST"
+    # 裁掉48小时(172800秒)以前的记录
+    awk -v cutoff=$((now-172800)) '$2>=cutoff' "$HIST" > "$HIST.tmp" && mv "$HIST.tmp" "$HIST"
+    # 统计48h内不同IP个数
+    awk '{print $1}' "$HIST" | sort -u | wc -l | tr -d ' '
+}
+
+# 逐项输出检查结果: 名称=ok|warn|fail:细节
 checkdetail() {
-    core_up && echo '代理内核=ok' || echo '代理内核=fail:未运行'
-    tun_up && echo 'TUN网卡=ok' || echo 'TUN网卡=fail:不在线'
+    # 1. 代理内核(按安装时识别的客户端判定)
+    if proxy_alive; then
+        echo "代理内核=ok:$(proxy_name) 运行中"
+    else
+        echo "代理内核=fail:$(proxy_name) 未运行"
+    fi
+    # 2. TUN 网卡(fake-ip 段优先,通用虚拟网卡兜底)
+    if tun_up; then
+        echo 'TUN网卡=ok'
+    elif tun_any; then
+        echo 'TUN网卡=ok:通用虚拟网卡'
+    else
+        echo 'TUN网卡=fail:不在线'
+    fi
 
     read -r ip loc <<< "$(egress)"
-    [ "$loc" = "US" ] && echo "出口IP=ok:$ip" || echo "出口IP=fail:${ip:-无}/${loc:-未知}"
-
+    # 3. 出口IP(按安装时锁定的目标国家)
+    if [ "$loc" = "$COUNTRY_TARGET" ]; then echo "出口IP=ok:$ip/$loc"; else echo "出口IP=fail:${ip:-无}/${loc:-未知}(期望$COUNTRY_TARGET)"; fi
+    # 4. IP 一致(含 48h 审查)
     lastip=""; [ -f "$BASE/lastip" ] && lastip=$(cat "$BASE/lastip")
+    ipst=""; ipdt=""
     if [ -z "$ip" ]; then echo 'IP一致=fail:未获取到出口IP'
-    elif [ -z "$lastip" ]; then echo 'IP一致=ok:首次记录'
-    elif [ "$ip" = "$lastip" ]; then echo 'IP一致=ok'
-    else echo "IP一致=warn:$lastip → $ip"; fi
+    elif [ -z "$lastip" ]; then ipst="ok"; ipdt="首次记录"
+    elif [ "$ip" = "$lastip" ]; then ipst="ok"
+    else ipst="warn"; ipdt="$lastip → $ip"; fi
     [ -n "$ip" ] && echo "$ip" > "$BASE/lastip"
+    # IP 审查:48h 内出口 IP 变化 ≥3 次提示账号画像风险(只 warn 不 fail)
+    if [ -n "$ipst" ]; then
+        ipn=$(iphist_count "$ip")
+        if [ "$ipn" -ge 3 ] 2>/dev/null; then
+            if [ "$ipst" = "ok" ]; then
+                ipst="warn"; ipdt="48h内出口IP变化${ipn}次,账号画像有风险,建议固定节点"
+            else
+                ipdt="$ipdt;48h内出口IP变化${ipn}次,账号画像有风险,建议固定节点"
+            fi
+        fi
+        if [ -z "$ipdt" ]; then echo "IP一致=$ipst"; else echo "IP一致=$ipst:$ipdt"; fi
+    fi
 
+    # 5. 时区
     tz=$(timedatectl show -p Timezone --value 2>/dev/null)
     [ "$tz" = "$TZ_TARGET" ] && echo '时区=ok' || echo "时区=fail:$tz"
 
+    # 6. 地区(LANG 未设时回退 localectl)
     lang="${LANG:-$(localectl status 2>/dev/null | grep 'LANG=' | head -1 | cut -d= -f2)}"
-    case "$lang" in en_US*) echo '地区=ok' ;; *) echo "地区=fail:$lang" ;; esac
+    case "$lang" in ${LOCALE_TARGET}*) echo '地区=ok' ;; *) echo "地区=fail:$lang(期望$LOCALE_TARGET)" ;; esac
 
+    # 7. IPv6
     v6=$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null)
     [ "$v6" = "1" ] && echo 'IPv6=ok:已关闭' || echo 'IPv6=fail:未关闭'
 
+    # 8. DNS
     dnsip=$(dns_query claude.ai)
     case "$dnsip" in 198.18.*) echo 'DNS=ok:走隧道' ;; *) echo "DNS=fail:未走隧道(${dnsip:-空})" ;; esac
 
+    # 9. WebRTC
     wr=$(webrtc_test)
     case "$wr" in
         RESULT:NONE) echo 'WebRTC=ok:UDP不出网,零暴露' ;;
@@ -75,6 +188,7 @@ checkdetail() {
         *) echo 'WebRTC=fail:检测异常' ;;
     esac
 
+    # 10. 保镖
     if systemctl --user is-active claude-bodyguard.service >/dev/null 2>&1; then
         lastkill=$(tail -1 "$BASE/bodyguard.log" 2>/dev/null | cut -c1-40)
         echo "保镖=ok:${lastkill:-待命}"
@@ -82,18 +196,41 @@ checkdetail() {
         echo '保镖=fail:未运行'
     fi
 
-    grep -q "DOMAIN-SUFFIX,claude.ai,$PROXY_GROUP" "$CLASH_DIR/clash-verge.yaml" 2>/dev/null \
-        && echo '规则置顶=ok' || echo '规则置顶=fail:未生效'
+    # 11. 规则置顶:Clash Verge 配置/行为双保险,其他客户端只看行为
+    if [ "$PROXY_MODE" = "clash-verge" ]; then
+        if merge_ok; then
+            echo '规则置顶=ok'
+        elif route_ok; then
+            echo '规则置顶=ok:行为检测通过'
+        else
+            echo '规则置顶=fail:未生效'
+        fi
+    else
+        if route_ok; then
+            echo '规则置顶=ok:行为检测通过'
+        else
+            echo "规则置顶=fail:未命中(${ROUTE_MISSED# }),请在 $(proxy_name) 中自行加置顶规则"
+        fi
+    fi
 
+    # 12. 客户端语言
     echo '客户端语言=ok:跟随系统'
 
+    # 13. ASN 网络属性(住宅宽带 vs 机房)
     org=$(curl -s --max-time 6 https://ipinfo.io/json 2>/dev/null | grep '"org"' | cut -d'"' -f4)
     case "$org" in
         '') echo 'ASN属性=warn:未获取' ;;
-        *Comcast*|*AT\&T*|*Verizon*|*Spectrum*|*Charter*|*Cox*|*T-Mobile*|*Cable*|*esidential*) echo "ASN属性=ok:$org" ;;
+        *Comcast*|*AT\&T*|*Verizon*|*Spectrum*|*Charter*|*Cox*|*T-Mobile*|*Cable*|*esidential*|\
+        *NTT*|*KDDI*|*SoftBank*|*IIJ*|*OCN*|*So-net*|\
+        *HiNet*|*Chunghwa*|*CHT*|*kbro*|*Taiwan*|*FarEasTone*|*Data\ Communication*|\
+        *Singtel*|*StarHub*|*M1*|\
+        *HKT*|*PCCW*|*HKBN*|*HGC*|\
+        *BT*|*Sky*|*Virgin*|*TalkTalk*|*Vodafone*|\
+        *Deutsche\ Telekom*|*1\&1*|*O2*) echo "ASN属性=ok:$org" ;;
         *) echo "ASN属性=warn:疑似机房($org)" ;;
     esac
 
+    # 14. Anthropic 生态可达性
     r1=$(curl -s --max-time 8 -o /dev/null -w '%{http_code}' https://claude.ai/ 2>/dev/null)
     r2=$(curl -s --max-time 8 -o /dev/null -w '%{http_code}' https://api.anthropic.com/v1/models 2>/dev/null)
     if [ "$r1" != "000" ] && [ "$r2" != "000" ]; then
@@ -103,24 +240,122 @@ checkdetail() {
     fi
 }
 
+# 置顶规则写入(智能合并):不整文件覆盖,用户已有的 Merge 配置原样保留
+# 标记块自包含 prepend-rules 键+全部规则,重复执行幂等
+write_merge_rules() {
+    M="$CLASH_DIR/profiles/Merge.yaml"
+    B0="# >>> claude-switcher pinned rules >>>"
+    B1="# <<< claude-switcher pinned rules <<<"
+    mkdir -p "$CLASH_DIR/profiles"
+    # 置顶规则清单(缩进两格)
+    rules=""
+    for d in claude.ai claude.com anthropic.com claudeusercontent.com challenges.cloudflare.com datadoghq.com segment.io stripe.com stripe.network stripecdn.com intercom.io intercomcdn.com intercomassets.com; do
+        rules="$rules  - DOMAIN-SUFFIX,$d,$PROXY_GROUP
+"
+    done
+
+    # 首次:文件不存在,整文件写入
+    if [ ! -f "$M" ]; then
+        cat > "$M" <<MEOF
+# Profile Enhancement Merge Template for Clash Verge
+
+profile:
+  store-selected: true
+
+# Claude 全家族及生态域名置顶强制走代理(优先级高于任何国内规则集)
+$B0
+prepend-rules:
+$rules$B1
+MEOF
+        return 0
+    fi
+
+    # 已存在:备份后幂等替换(只在将要修改时备份)
+    cp "$M" "$M.bak.$(date +%Y%m%d%H%M%S)"
+    tmp="$M.cs.tmp"
+    cp "$M" "$tmp"
+    # 删除旧标记块(含标记行,兼容块在 prepend-rules 下缩进的情形)
+    if grep -qF "$B0" "$tmp"; then
+        awk -v b0="$B0" -v b1="$B1" '
+            index($0, b0) {inblock=1; next}
+            inblock && index($0, b1) {inblock=0; next}
+            !inblock
+        ' "$tmp" > "$tmp.out" && mv "$tmp.out" "$tmp"
+        # 清理孤立的 prepend-rules: 键(其后没有规则行,只剩空行/注释/EOF)
+        awk '
+            { L[NR]=$0 }
+            END {
+                for (i=1; i<=NR; i++) {
+                    if (L[i] ~ /^prepend-rules:/) {
+                        has=0
+                        for (j=i+1; j<=NR; j++) {
+                            if (L[j] ~ /^[ \t]*- /) { has=1; break }
+                            if (L[j] ~ /^[ \t]*$/ || L[j] ~ /^[ \t]*#/) continue
+                            break
+                        }
+                        if (!has) continue
+                    }
+                    print L[i]
+                }
+            }
+        ' "$tmp" > "$tmp.out" && mv "$tmp.out" "$tmp"
+    fi
+    # 注入:已有 prepend-rules: 则标记规则块(不带键)插到该行之后,否则文件顶部插入完整块
+    # 注意:多行文本走环境变量传递(macOS awk 的 -v 不支持含换行的字符串);先写中间文件再替换,失败不碰原文件
+    if grep -q '^prepend-rules:' "$tmp"; then
+        if MARK0="$B0" MARK1="$B1" RULES="$rules" awk '
+            /^prepend-rules:/ && !done {
+                print
+                print "  " ENVIRON["MARK0"]
+                printf "%s", ENVIRON["RULES"]
+                print "  " ENVIRON["MARK1"]
+                done=1
+                next
+            }
+            { print }
+        ' "$tmp" > "$tmp.out"; then
+            mv "$tmp.out" "$M" && rm -f "$tmp"
+        else
+            rm -f "$tmp" "$tmp.out"
+            return 1
+        fi
+    else
+        {
+            echo "# Claude 全家族及生态域名置顶强制走代理(优先级高于任何国内规则集)"
+            echo "$B0"
+            echo "prepend-rules:"
+            printf "%s" "$rules"
+            echo "$B1"
+            echo ""
+            cat "$tmp"
+        } > "$tmp.out" && mv "$tmp.out" "$M" && rm -f "$tmp"
+    fi
+    rm -f "$tmp"
+}
+
 fix() {
     echo "FIX:开始一键修复"
 
-    if ! core_up; then
-        echo "FIX:正在尝试启动 Clash Verge..."
-        (clash-verge >/dev/null 2>&1 &) || (clash-verge-rev >/dev/null 2>&1 &) || echo "FIX:未找到启动命令,请手动启动 Clash Verge"
+    # A. 代理内核 + TUN(仅 Clash Verge 代为启动,其他客户端只提示手动)
+    if ! proxy_alive; then
+        if [ "$PROXY_MODE" = "clash-verge" ]; then
+            echo "FIX:正在尝试启动 Clash Verge..."
+            (clash-verge >/dev/null 2>&1 &) || (clash-verge-rev >/dev/null 2>&1 &) || echo "FIX:未找到启动命令,请手动启动 Clash Verge"
+        else
+            echo "FIX:请手动启动 $(proxy_name)(各客户端启动方式不同,不代为执行)"
+        fi
     fi
     for i in $(seq 1 40); do
-        core_up && tun_up && break
+        proxy_alive && net_up && break
         sleep 1
     done
-    if core_up && tun_up; then
+    if proxy_alive && net_up; then
         echo "FIX:代理内核+TUN ✓"
     else
-        echo "FIX:代理内核/TUN ✗(请检查 Clash Verge 的 TUN 开关与节点)"
+        echo "FIX:代理内核/TUN ✗(请检查 $(proxy_name) 的 TUN 开关与节点)"
     fi
 
-    # 时区/IPv6/DNS(sudo)
+    # B. 时区/IPv6/DNS(sudo)
     adminCmds=""
     tz=$(timedatectl show -p Timezone --value 2>/dev/null)
     [ "$tz" != "$TZ_TARGET" ] && adminCmds="${adminCmds}timedatectl set-timezone $TZ_TARGET; "
@@ -134,7 +369,7 @@ fix() {
     command -v resolvectl >/dev/null 2>&1 && resolvectl flush-caches 2>/dev/null
     command -v systemd-resolve >/dev/null 2>&1 && systemd-resolve --flush-caches 2>/dev/null
 
-    # 保镖(systemd user 服务,免 sudo)
+    # C. 保镖(systemd user 服务,免 sudo)
     if ! systemctl --user is-active claude-bodyguard.service >/dev/null 2>&1; then
         echo "FIX:注册并启动保镖服务..."
         mkdir -p "$HOME/.config/systemd/user"
@@ -155,35 +390,26 @@ EOF
             && echo "FIX:保镖 ✓" || echo "FIX:保镖 ✗"
     fi
 
-    # 置顶规则
-    if ! grep -q "DOMAIN-SUFFIX,claude.ai,$PROXY_GROUP" "$CLASH_DIR/clash-verge.yaml" 2>/dev/null; then
-        echo "FIX:重写置顶规则..."
-        mkdir -p "$CLASH_DIR/profiles"
-        cat > "$CLASH_DIR/profiles/Merge.yaml" <<MEOF
-profile:
-  store-selected: true
-
-prepend-rules:
-  - DOMAIN-SUFFIX,claude.ai,$PROXY_GROUP
-  - DOMAIN-SUFFIX,claude.com,$PROXY_GROUP
-  - DOMAIN-SUFFIX,anthropic.com,$PROXY_GROUP
-  - DOMAIN-SUFFIX,claudeusercontent.com,$PROXY_GROUP
-  - DOMAIN-SUFFIX,challenges.cloudflare.com,$PROXY_GROUP
-  - DOMAIN-SUFFIX,datadoghq.com,$PROXY_GROUP
-  - DOMAIN-SUFFIX,segment.io,$PROXY_GROUP
-  - DOMAIN-SUFFIX,stripe.com,$PROXY_GROUP
-  - DOMAIN-SUFFIX,stripe.network,$PROXY_GROUP
-  - DOMAIN-SUFFIX,stripecdn.com,$PROXY_GROUP
-  - DOMAIN-SUFFIX,intercom.io,$PROXY_GROUP
-  - DOMAIN-SUFFIX,intercomcdn.com,$PROXY_GROUP
-  - DOMAIN-SUFFIX,intercomassets.com,$PROXY_GROUP
-MEOF
-        echo "FIX:置顶规则已写入(请重启 Clash Verge 生效)"
+    # D. 置顶规则(仅 Clash Verge 智能合并写入;其他客户端行为检测不通过时提示手动)
+    if [ "$PROXY_MODE" = "clash-verge" ]; then
+        if ! merge_ok && ! route_ok; then
+            echo "FIX:写入置顶规则(智能合并,不动你的已有配置)..."
+            write_merge_rules && echo "FIX:置顶规则已写入(请重启 Clash Verge 生效)" || echo "FIX:置顶规则 ✗(写入失败)"
+        fi
+    else
+        if ! route_ok; then
+            echo "FIX:置顶规则 ✗(未命中:${ROUTE_MISSED# }) — 请在 $(proxy_name) 中自行添加 DOMAIN-SUFFIX 置顶规则"
+        fi
     fi
 
+    # E. 出口IP最终验证
     sleep 2
     read -r ip loc <<< "$(egress)"
-    [ "$loc" = "US" ] && echo "FIX:出口IP ✓ ($ip)" || echo "FIX:出口IP ✗ (${ip:-无}/${loc:-未知}) — 请换节点/线路"
+    if [ "$loc" = "$COUNTRY_TARGET" ]; then
+        echo "FIX:出口IP ✓ ($ip/$loc)"
+    else
+        echo "FIX:出口IP ✗ (${ip:-无}/${loc:-未知},期望$COUNTRY_TARGET) — 请换节点/线路"
+    fi
     echo "FIX:修复流程结束"
 }
 
@@ -300,5 +526,7 @@ case "${1:-menu}" in
     status) status ;;
     fix) fix ;;
     switch) switch_to "${2:-}" ;;
-    menu|*) menu ;;
+    write-merge-rules) write_merge_rules ;;  # 隐藏入口:供安装器调用,保证两处合并逻辑一致
+    menu) menu ;;
+    *) echo "用法: claude-switch.sh checkdetail|status|fix|switch A|B|menu"; exit 2 ;;
 esac

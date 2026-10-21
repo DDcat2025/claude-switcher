@@ -213,8 +213,8 @@ bash core/claude-switch.sh diagnose-proxy --proxy http://127.0.0.1:18080
 - [x] macOS 版：14 项环境审计 + Kill-Switch + 快照切换 + 漂移自愈（已稳定）
 - [x] Windows 版（Beta）：核心逻辑全移植
 - [x] Linux 版（Beta）：bash 核心 + systemd 保镖 + 终端菜单
-- [ ] Windows 版稳定化：真机测试迭代，收敛 Beta
-- [ ] Linux 版稳定化：多发行版实测迭代
+- [ ] Windows 版稳定化：多客户端/地区自适应/TUN 通用判定已落地（静态验证通过），真机回归持续进行
+- [ ] Linux 版稳定化：多客户端/地区自适应/COW 快照已落地（桩测试通过），多发行版真机回归持续进行
 - [x] Web 版环境检测页：手机/平板浏览器打开即测，零安装
 - [ ] 更多指纹维度：字体地区特征、Canvas/WebGL 渲染特征（Web 版已覆盖 Canvas/WebGL 展示，桌面版后续）
 - [x] 更多代理客户端适配：已支持 Clash Verge / Shadowrocket / sing-box / ClashX / Surge（含 auto 自动识别）
