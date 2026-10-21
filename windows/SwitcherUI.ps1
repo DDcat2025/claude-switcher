@@ -1,4 +1,4 @@
-# Claude 账号切换器 - Windows 界面 (WPF, Beta)
+﻿# Claude 账号切换器 - Windows 界面 (WPF, Beta)
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName PresentationCore
 Add-Type -AssemblyName WindowsBase
