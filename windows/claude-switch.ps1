@@ -4,6 +4,8 @@ $ErrorActionPreference = 'Continue'
 try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch {}
 
 # ============ 安装时可配置项(安装器自动改写) ============
+$PROXY_MODE = "clash-verge"            # 代理客户端: clash-verge|sing-box|clashx|surge|wireguard|other|auto
+$COUNTRY_TARGET = "US"                 # 目标出口国家(安装时按出口自动识别)
 $TZ_TARGET = "Eastern Standard Time"   # Windows 时区ID
 $PROXY_GROUP = "GLOBAL"                # Clash 代理组名
 # =======================================================
@@ -11,13 +13,59 @@ $PROXY_GROUP = "GLOBAL"                # Clash 代理组名
 $BASE = Join-Path $env:USERPROFILE ".claude-switcher"
 $DATA = Join-Path $env:APPDATA "Claude"
 $LOG  = Join-Path $BASE "claude-switch.log"
-$CLASH_DIR = Join-Path $env:APPDATA "io.github.clash-verge-rev.clash-verge-rev"
+$CLASH_DIR = @(
+    (Join-Path $env:APPDATA "io.github.clash-verge-rev.clash-verge-rev"),
+    (Join-Path $env:LOCALAPPDATA "io.github.clash-verge-rev.clash-verge-rev")
+) | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $CLASH_DIR) { $CLASH_DIR = Join-Path $env:APPDATA "io.github.clash-verge-rev.clash-verge-rev" }
 New-Item -ItemType Directory -Force -Path "$BASE\accounts" | Out-Null
 
 function Log($m) { "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $m" | Out-File -Append -Encoding utf8 $LOG }
 
-function Test-CoreUp { [bool](Get-Process -Name 'verge-mihomo' -ErrorAction SilentlyContinue) }
-function Test-TunUp  { [bool](Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -like '198.18.*' }) }
+# 代理客户端显示名(供检查细节输出)
+function Get-ProxyName {
+    switch ($PROXY_MODE) {
+        'clash-verge' { return 'Clash Verge' }
+        'sing-box'    { return 'sing-box' }
+        'clashx'      { return 'ClashX' }
+        'surge'       { return 'Surge' }
+        'wireguard'   { return 'WireGuard' }
+        'other'       { return '其他代理客户端' }
+        'auto'        { return '代理客户端(auto)' }
+        default       { return $PROXY_MODE }
+    }
+}
+
+# 代理客户端在线判定:按安装时识别的客户端分派;auto 任一命中即活,other 只依赖 TUN
+function Test-ProxyAlive {
+    switch ($PROXY_MODE) {
+        'clash-verge' { return [bool](Get-Process -Name 'verge-mihomo' -ErrorAction SilentlyContinue) }
+        'sing-box'    { return [bool](Get-Process -Name 'sing-box' -ErrorAction SilentlyContinue) }
+        'clashx'      { return [bool](Get-Process -Name 'ClashX' -ErrorAction SilentlyContinue) }
+        'surge'       { return [bool](Get-Process -Name 'Surge' -ErrorAction SilentlyContinue) }
+        'wireguard'   { return [bool](Get-Service -Name 'WireGuardTunnel*' -ErrorAction SilentlyContinue | Where-Object Status -eq 'Running') }
+        'other'       { return $true }
+        'auto' {
+            if (Get-Process -Name 'verge-mihomo','sing-box','ClashX','Surge' -ErrorAction SilentlyContinue) { return $true }
+            return [bool](Get-Service -Name 'WireGuardTunnel*' -ErrorAction SilentlyContinue | Where-Object Status -eq 'Running')
+        }
+        default { return [bool](Get-Process -Name 'verge-mihomo' -ErrorAction SilentlyContinue) }
+    }
+}
+
+# TUN 在线判定:198.18 假IP段优先,否则回退到任意 Up 状态的虚拟网卡(兼容 Astrill/WireGuard/OpenVPN 等)
+function Get-TunStatus {
+    if (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -like '198.18.*' }) {
+        return @{ up = $true; detail = '198.18 假IP段' }
+    }
+    $nic = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' -and ($_.InterfaceDescription -match 'TAP|TUN|WireGuard|Wintun|VPN|Tailscale') }
+    if ($nic) { return @{ up = $true; detail = '通用虚拟网卡' } }
+    return @{ up = $false; detail = '不在线' }
+}
+function Test-TunUp {
+    $t = Get-TunStatus
+    return [bool]$t.up
+}
 
 function Get-Egress {
     $trace = & curl.exe -s --max-time 8 "https://www.cloudflare.com/cdn-cgi/trace" 2>$null
@@ -73,11 +121,20 @@ function Test-WebRTC($exitIp) {
 function Test-RulesPinned { Test-Path "$CLASH_DIR\clash-verge.yaml" -and (Select-String -Path "$CLASH_DIR\clash-verge.yaml" -Pattern "DOMAIN-SUFFIX,claude.ai,$PROXY_GROUP" -Quiet) }
 
 function Invoke-CheckDetail {
-    if (Test-CoreUp) { "代理内核=ok" } else { "代理内核=fail:未运行" }
-    if (Test-TunUp) { "TUN网卡=ok" } else { "TUN网卡=fail:不在线" }
+    $pname = Get-ProxyName
+    if (Test-ProxyAlive) {
+        if ($PROXY_MODE -eq 'other') { "代理内核=ok:$pname(仅校验TUN)" }
+        else { "代理内核=ok:$pname 运行中" }
+    } else { "代理内核=fail:$pname 未运行" }
+
+    $tun = Get-TunStatus
+    if ($tun.up) {
+        if ($tun.detail -eq '198.18 假IP段') { "TUN网卡=ok" }
+        else { "TUN网卡=ok:$($tun.detail)" }
+    } else { "TUN网卡=fail:不在线" }
 
     $e = Get-Egress
-    if ($e.loc -eq 'US') { "出口IP=ok:$($e.ip)" } else { "出口IP=fail:$($e.ip)/$($e.loc)" }
+    if ($e.loc -eq $COUNTRY_TARGET) { "出口IP=ok:$($e.ip)" } else { "出口IP=fail:$($e.ip)/$($e.loc)(期望$COUNTRY_TARGET)" }
 
     $lastipFile = "$BASE\lastip.txt"
     $lastip = if (Test-Path $lastipFile) { (Get-Content $lastipFile -Raw).Trim() } else { '' }
@@ -124,15 +181,22 @@ function Invoke-CheckDetail {
 function Invoke-Fix {
     "FIX:开始一键修复"
 
-    # A. 拉起 Clash Verge 并等待内核+TUN
-    if (-not (Test-CoreUp)) {
-        "FIX:正在启动 Clash Verge..."
-        $cv = Get-ChildItem "$env:LOCALAPPDATA\Programs","$env:ProgramFiles","${env:ProgramFiles(x86)}" -Recurse -Filter "Clash Verge*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($cv) { Start-Process $cv.FullName } else { "FIX:未找到 Clash Verge 可执行文件,请手动启动" }
+    # A. 拉起代理客户端并等待内核+TUN(仅 Clash Verge 可自动拉起)
+    if ($PROXY_MODE -eq 'clash-verge') {
+        if (-not (Test-ProxyAlive)) {
+            "FIX:正在启动 Clash Verge..."
+            $cv = Get-ChildItem "$env:LOCALAPPDATA\Programs","$env:ProgramFiles","${env:ProgramFiles(x86)}" -Recurse -Filter "Clash Verge*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($cv) { Start-Process $cv.FullName } else { "FIX:未找到 Clash Verge 可执行文件,请手动启动" }
+        }
+        $ok = $false
+        for ($i = 0; $i -lt 40; $i++) { if ((Test-ProxyAlive) -and (Test-TunUp)) { $ok = $true; break }; Start-Sleep 1 }
+        if ($ok) { "FIX:代理内核+TUN ✓" } else { "FIX:代理内核/TUN ✗(请打开 Clash Verge 检查节点/线路及 TUN 开关)" }
+    } else {
+        $pname = Get-ProxyName
+        if ((Test-ProxyAlive) -and (Test-TunUp)) { "FIX:代理客户端($pname)+TUN ✓" }
+        elseif (-not (Test-ProxyAlive)) { "FIX:代理客户端($pname)未运行,请手动启动并开启 TUN 模式" }
+        else { "FIX:TUN 未在线($pname),请检查客户端 TUN 开关" }
     }
-    $ok = $false
-    for ($i = 0; $i -lt 40; $i++) { if ((Test-CoreUp) -and (Test-TunUp)) { $ok = $true; break }; Start-Sleep 1 }
-    if ($ok) { "FIX:代理内核+TUN ✓" } else { "FIX:代理内核/TUN ✗(请打开 Clash Verge 检查节点/线路及 TUN 开关)" }
 
     # B. 时区/IPv6/DNS/保镖(需管理员:通过 UAC 弹一次)
     $adminScript = @()
@@ -153,8 +217,10 @@ function Invoke-Fix {
         "FIX:时区/IPv6/保镖 无需修复 ✓"
     }
 
-    # B2. 置顶规则
-    if (-not (Test-RulesPinned)) {
+    # B2. 置顶规则(仅 Clash Verge 可自动改写)
+    if ($PROXY_MODE -ne 'clash-verge') {
+        "FIX:请在 $(Get-ProxyName) 中自行添加 Claude 域名置顶规则"
+    } elseif (-not (Test-RulesPinned)) {
         "FIX:重写置顶规则..."
         $merge = @"
 profile:
@@ -188,7 +254,7 @@ prepend-rules:
     # C. 出口IP最终验证
     Start-Sleep 2
     $e = Get-Egress
-    if ($e.loc -eq 'US') { "FIX:出口IP ✓ ($($e.ip))" } else { "FIX:出口IP ✗ ($($e.ip)/$($e.loc)) — 请换节点/线路" }
+    if ($e.loc -eq $COUNTRY_TARGET) { "FIX:出口IP ✓ ($($e.ip))" } else { "FIX:出口IP ✗ ($($e.ip)/$($e.loc),期望$COUNTRY_TARGET) — 请换节点/线路" }
     "FIX:修复流程结束"
 }
 

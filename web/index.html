@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https: wss:; base-uri 'none'; form-action 'none'">
+  <meta name="referrer" content="no-referrer">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0B0D14">
+  <meta name="description" content="Claude 切换器 Web 版环境检测：出口 IP、地区一致性、WebRTC、IPv6、DNS 近似与浏览器指纹，手机浏览器打开即测，零安装。">
+  <title>Claude 环境检测 · Web 版</title>
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <a class="skip-link" href="#checks">跳到检测项</a>
+
+  <div class="page">
+    <header class="hero">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none">
+            <path d="M12 2.5 20 5.6v5.3c0 4.9-3.2 8.9-8 10.6-4.8-1.7-8-5.7-8-10.6V5.6L12 2.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+            <path d="m8.6 11.8 2.3 2.3 4.6-4.7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <div class="brand-title-row">
+            <h1 class="brand-title">Claude 环境检测</h1>
+            <span class="badge">WEB · 零安装</span>
+          </div>
+          <p class="brand-sub">手机 / 平板浏览器打开即测 · 不安装、不登录</p>
+        </div>
+      </div>
+
+      <p class="privacy">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <rect x="5" y="10" width="14" height="10" rx="2" stroke="currentColor" stroke-width="1.6"/>
+          <path d="M8 10V7a4 4 0 0 1 8 0v3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+        </svg>
+        <span>检测在本地浏览器完成，数据仅发送至 ipinfo.io / Cloudflare / ipify / Google DNS 等公共 API；<strong>不记录、不上传、不写入本地存储</strong>。</span>
+      </p>
+    </header>
+
+    <main>
+      <section class="summary" id="summary" aria-labelledby="summary-title">
+        <div class="score-ring" id="score-ring" data-state="running">
+          <div class="score-inner">
+            <span id="score-value">—</span>
+            <small>分</small>
+          </div>
+        </div>
+
+        <div class="summary-main">
+          <p class="kicker" id="summary-title">环境检测总评</p>
+          <h2 class="verdict" id="verdict" aria-live="polite">正在检测…</h2>
+          <p class="verdict-detail" id="verdict-detail">正在采集浏览器侧信号，通常需要 5–10 秒。</p>
+          <div class="progress" id="progress" role="progressbar" aria-label="检测进度" aria-valuemin="0" aria-valuemax="6" aria-valuenow="0">
+            <span id="progress-bar"></span>
+          </div>
+          <p class="progress-text" id="progress-text">0 / 6 项完成</p>
+        </div>
+
+        <button class="btn" id="rerun" type="button">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M20 12a8 8 0 1 1-2.3-5.7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+            <path d="M20 4v5h-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span>重新检测</span>
+        </button>
+      </section>
+
+      <div class="notice" id="file-notice" hidden></div>
+
+      <section class="checks" id="checks" aria-labelledby="checks-title">
+        <div class="section-head">
+          <h2 id="checks-title">检测项</h2>
+          <span class="section-meta">6 项浏览器侧信号</span>
+        </div>
+        <div class="card-list" id="card-list"></div>
+      </section>
+
+      <section class="conclusion" id="conclusion" data-state="running" aria-labelledby="conclusion-title">
+        <header class="card-head">
+          <div class="card-index" aria-hidden="true">07</div>
+          <div class="card-title-wrap">
+            <h2 class="card-title" id="conclusion-title">检测结论</h2>
+            <p class="card-sub">总评、失败项与能力边界</p>
+          </div>
+          <span class="status" id="conclusion-status" data-status="running">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span class="status-text" id="conclusion-status-text">等待中</span>
+          </span>
+        </header>
+
+        <div class="card-body conclusion-body">
+          <p class="conclusion-verdict" id="conclusion-verdict">正在完成检测…</p>
+          <div id="conclusion-fails"></div>
+
+          <div class="disclaimer">
+            <strong>能力边界</strong>
+            <p>本页只评估浏览器侧信号，不替代桌面版 14 项审计；不检测 TUN/保镖/进程级泄漏。</p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>Claude 切换器 · Fail-Closed 账号环境管理器</span>
+      <span>
+        <a href="https://github.com/YOURSJEYO/claude-switcher" target="_blank" rel="noopener noreferrer">GitHub 仓库</a>
+        · MIT License
+      </span>
+    </footer>
+  </div>
+
+  <noscript>
+    <div class="noscript">本页需要 JavaScript 才能执行检测。请启用 JavaScript 后刷新。</div>
+  </noscript>
+
+  <script src="./app.js" defer></script>
+</body>
+</html>

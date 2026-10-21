@@ -110,3 +110,15 @@ Linux 用户使用 `linux/` 下的 bash 版本。**开始之前必须先理解�
 - 安装器：`installer/`
 - Windows 版：`windows/`（核心 `claude-switch.ps1` / 界面 `SwitcherUI.ps1` / 安装器 `install.ps1` / 保镖 `claude-bodyguard.ps1`）
 - Linux 版：`linux/`（核心 `claude-switch.sh` / 保镖 `claude-bodyguard.sh` / 安装器 `install.sh`）
+- Web 版：`web/`（纯静态环境检测页，GitHub Pages 从该目录发布）
+
+## 维护者本机纪律（Agent 必须遵守）
+
+**除非维护者在当次对话中明确要求，否则不得更新/部署维护者本机的已安装版本。** 具体包括：
+
+- 不得覆盖 `~/.local/bin/claude-switch.sh`、`~/.local/bin/local.claude-*.plist`
+- 不得重新编译或替换桌面 App（`~/Desktop/Claude切换器.app`）
+- 不得改动 `/Library/Application Support/claude-switcher/`、`/Library/LaunchDaemons/local.claude-*`、`~/Library/LaunchAgents/local.claude-*`
+- 不得触发本机 `update`、不得执行安装器/卸载器
+
+日常开发默认流程：**只修改仓库文件 → 验证（本地只跑不影响安装态的测试/静态检查）→ 提交推送**。需要真机验证时，先询问维护者是否允许在本机部署。

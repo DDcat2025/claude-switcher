@@ -124,6 +124,21 @@ git clone https://github.com/YOURSJEYO/claude-switcher.git
 3. B 账号首次使用登录一次，以后 A/B 随切随用、互不干扰
 4. 换了其他国家的节点 → 跑一次 `~/.local/bin/claude-switch.sh set-region`，国家/时区/地区格式一键重新锁定
 
+## Web 版环境检测（零安装）
+
+手机 / 平板浏览器打开即测，无需安装：[https://yoursjeyo.github.io/claude-switcher/](https://yoursjeyo.github.io/claude-switcher/)
+
+页面逐项评估 6 类浏览器侧信号，并给出总评与失败项：
+
+- **出口 IP / 归属**：ipinfo.io 优先，Cloudflare trace 兜底
+- **地区一致性**：浏览器时区、UTC 偏移与语言是否和出口国家矛盾
+- **WebRTC 泄漏**：STUN 候选地址与出口 IP 比对，识别 mDNS 混淆与 fake-IP
+- **IPv6 暴露**：IPv6 是否可直连、归属国家是否与 IPv4 出口一致
+- **DNS 泄漏（近似）**：1.1.1.1 / Google DoH 公共加密解析可达性
+- **浏览器指纹展示**：Canvas 哈希、WebGL vendor/renderer、屏幕与设备参数（只展示，不阻断）
+
+纯前端、无追踪、无 localStorage；检测请求只发往公共 API，结果不上传。它只评估浏览器侧信号，**不替代桌面版 14 项审计**，也不检测 TUN / 保镖 / 进程级泄漏。部署方式与完整隐私说明见 [web/README.md](web/README.md)。
+
 ## 已有代理的独立诊断（macOS CLI）
 
 已有 HTTP/SOCKS 入口、由其他工具管理账号时，可以先单独检查 Claude 的网络传输，无需运行安装器或启动 Claude：
@@ -165,6 +180,7 @@ bash core/claude-switch.sh diagnose-proxy --proxy http://127.0.0.1:18080
 │   └── stun-probe.py       # STUN 探针(手工协议实现)
 ├── windows/                # Windows 版(PowerShell 核心 + WPF 界面, Beta)
 ├── linux/                  # Linux 版(bash 核心 + systemd 保镖 + 终端菜单, Beta)
+├── web/                    # Web 版环境检测页(纯静态, GitHub Pages)
 ├── daemons/                # Kill-Switch / Watchdog / 自动更新 launchd 模板
 ├── installer/              # 双击安装/卸载
 ├── scripts/gen-sums.sh     # 重新生成 SHA256SUMS(改动 core/daemons/installer 后必跑)
@@ -197,8 +213,8 @@ bash core/claude-switch.sh diagnose-proxy --proxy http://127.0.0.1:18080
 - [x] Linux 版（Beta）：bash 核心 + systemd 保镖 + 终端菜单
 - [ ] Windows 版稳定化：真机测试迭代，收敛 Beta
 - [ ] Linux 版稳定化：多发行版实测迭代
-- [ ] Web 版环境检测页：手机/平板浏览器打开即测，零安装
-- [ ] 更多指纹维度：字体地区特征、Canvas/WebGL 渲染特征
+- [x] Web 版环境检测页：手机/平板浏览器打开即测，零安装
+- [ ] 更多指纹维度：字体地区特征、Canvas/WebGL 渲染特征（Web 版已覆盖 Canvas/WebGL 展示，桌面版后续）
 - [x] 更多代理客户端适配：已支持 Clash Verge / Shadowrocket / sing-box / ClashX / Surge（含 auto 自动识别）
 - [ ] 快照切换提速：增量归档（只写差量）
 - [x] 应用内自动更新：launchd 每 12 小时自动检查更新，自检失败自动回滚，也可手动 `claude-switch.sh update` 保底
