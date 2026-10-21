@@ -1,4 +1,4 @@
-﻿# Claude 账号切换器 - Windows 界面 (WPF, Beta)
+# Claude 账号切换器 - Windows 界面 (WPF, Beta)
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName PresentationCore
 Add-Type -AssemblyName WindowsBase
@@ -8,6 +8,7 @@ $CORE = "$BASE\claude-switch.ps1"
 
 $xaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Claude 账号切换器" Width="470" Height="820" ResizeMode="NoResize"
         WindowStartupLocation="CenterScreen" Background="#FF12141D" Foreground="White">
     <Grid Margin="20">
@@ -97,6 +98,11 @@ function Set-Status($text, $color) {
 }
 
 function Invoke-Core([string[]]$coreArgs) {
+    # checkdetail 改从落盘的 last-check.txt(UTF-8)读取:子进程 stdout 经控制台代码页(如 GBK/936)转码会把中文键名弄乱,导致 14 项只匹配 3 项
+    if ($coreArgs[0] -eq 'checkdetail') {
+        & powershell -NoProfile -ExecutionPolicy Bypass -File $CORE @coreArgs 2>$null | Out-Null
+        return ((Get-Content "$BASE\last-check.txt" -Encoding UTF8) -join "`n").Trim()
+    }
     $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $CORE @coreArgs 2>$null
     return ($out | Out-String).Trim()
 }

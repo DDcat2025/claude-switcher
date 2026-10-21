@@ -38,3 +38,5 @@
 - 界面是 WPF 重写的第一版,样式以 Mac 版为准对齐,细节可能有出入
 - Clash Verge 的 TUN 开关在 Windows 上如果被更新重置,目前需要手动在设置里重新打开(一键修复会提示)
 - 账号快照切换前请确保 Claude 已完全退出(托盘图标也要退出)
+- **保镖与 TUN 检测按 Clash Verge 设计**:`TUN网卡` 判定依赖 `198.18.x.x` 假 IP 段、保镖以 `verge-mihomo 进程 + TUN` 双因子判定代理健康。使用 Astrill / WireGuard / OpenVPN 等其他 VPN(有的 TUN 也用 198.18 段,有的完全没有)会造成误判:轻则 TUN 检查常红,**重则保镖每 10 秒误杀 Claude**。非 Clash Verge 用户请先暂停保镖(计划任务里禁用 ClaudeBodyguard),并在 Issue 里告知你用的客户端,我们按需求排期适配
+- 系统区域为 zh-CN(控制台代码页 936/GBK)时,界面通过读取核心脚本落盘的 `last-check.txt`(UTF-8)展示检查结果,不受代码页影响;若你看到"检测输出不完整(3/14)"且用的是旧版界面,请更新到最新版
