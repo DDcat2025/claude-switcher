@@ -824,25 +824,49 @@ quit_claude() {
 
 archive_current() {
     cur="$1"
-    rm -rf "$BASE/accounts/$cur.tmp"
-    ditto "$DATA" "$BASE/accounts/$cur.tmp" && rm -rf "$BASE/accounts/$cur" && mv "$BASE/accounts/$cur.tmp" "$BASE/accounts/$cur"
-    log "已存档账号$cur"
+    t0=$(date +%s)
+    # 归档=把当前数据目录整体移走(同卷瞬时,跨卷 mv 自动退化为复制),不再全量深拷贝
+    rm -rf "$BASE/accounts/$cur.new"
+    if mv "$DATA" "$BASE/accounts/$cur.new" 2>/dev/null; then
+        rm -rf "$BASE/accounts/$cur"
+        mv "$BASE/accounts/$cur.new" "$BASE/accounts/$cur"
+    else
+        rm -rf "$BASE/accounts/$cur.tmp"
+        copy_tree "$DATA" "$BASE/accounts/$cur.tmp" && rm -rf "$BASE/accounts/$cur" && mv "$BASE/accounts/$cur.tmp" "$BASE/accounts/$cur"
+    fi
+    log "已存档账号$cur ($(( $(date +%s) - t0 ))s)"
+}
+
+# 快照复制:APFS 上用 clonefile(COW) 近乎瞬时,不改写已有快照;不支持时回退 ditto 全量复制
+copy_tree() {
+    src="$1"; dst="$2"
+    if [ "${CLAUDE_SWITCHER_NO_CLONE:-0}" != "1" ] && cp -cRp "$src" "$dst" 2>/dev/null; then
+        return 0
+    fi
+    rm -rf "$dst"
+    ditto "$src" "$dst"
 }
 
 switch_to() {
     target="$1"
     cur="none"; [ -f "$BASE/current" ] && cur=$(cat "$BASE/current")
+    just_archived=0
 
     # 首次运行:把当前登录中的状态收编为账号A
     if [ "$cur" = "none" ] && [ -d "$DATA" ] && [ -n "$(ls -A "$DATA" 2>/dev/null)" ]; then
         quit_claude || { echo "FAIL:Claude 未能退出，请手动退出后重试"; return 1; }
         archive_current A
+        just_archived=1
         cur="A"; echo "$cur" > "$BASE/current"
         log "首次运行:当前登录状态已收编为账号A"
         echo "NOTE:已将当前登录收编为账号A"
     fi
 
     if [ "$cur" = "$target" ]; then
+        # 归档是移动语义,首次收编后需把当前账号还原回 DATA
+        if [ "$just_archived" = "1" ] && [ ! -d "$DATA" ] && [ -d "$BASE/accounts/$target" ]; then
+            copy_tree "$BASE/accounts/$target" "$DATA"
+        fi
         open -a "Claude"
         echo "INFO:当前已是账号$target"
         return 0
@@ -850,12 +874,13 @@ switch_to() {
 
     quit_claude || { echo "FAIL:Claude 未能退出，请手动退出后重试"; return 1; }
 
-    [ "$cur" != "none" ] && [ -d "$DATA" ] && archive_current "$cur"
+    [ "$just_archived" = "0" ] && [ "$cur" != "none" ] && [ -d "$DATA" ] && archive_current "$cur"
 
     rm -rf "$DATA.new"
+    t0=$(date +%s)
     if [ -d "$BASE/accounts/$target" ]; then
-        ditto "$BASE/accounts/$target" "$DATA.new"
-        log "已载入账号$target 存档"
+        copy_tree "$BASE/accounts/$target" "$DATA.new"
+        log "已载入账号$target 存档 ($(( $(date +%s) - t0 ))s)"
     else
         mkdir -p "$DATA.new"
         log "账号$target 无存档，将以全新状态初始化"
@@ -864,8 +889,8 @@ switch_to() {
     echo "$target" > "$BASE/current"
 
     open -a "Claude"
-    log "已切换到账号$target 并启动"
-    echo "OK:已切换到账号$target"
+    log "已切换到账号$target 并启动 ($(( $(date +%s) - t0 ))s)"
+    echo "OK:已切换到账号$target ($(( $(date +%s) - t0 ))s)"
     return 0
 }
 

@@ -66,6 +66,8 @@ AI 服务平台的风控已经从"看 IP"进化到**全维度环境画像**：�
 
 多账号不是"登出再登入"（那会产生大量认证事件与指纹抖动），而是**物理交换数据卷**：每个账号持有独立的 Device Fingerprint、OAuth Credential 与本地状态，切换时原子化封存/载入。对服务端而言，每个账号看到的都是一台恒定不变的设备。
 
+切换开销被压到"零拷贝"级别：归档是**同卷移动**（rename，瞬时完成），载入走 **APFS clonefile / reflink 的写时复制（COW）**——只有日后被修改的数据块才会真正复制。macOS 不支持 clonefile 时自动回退 `ditto` 全量复制，Linux 回退普通 `cp -a`（可用 `CLAUDE_SWITCHER_NO_CLONE=1` 强制走回退路径）。
+
 ### 5. 配置漂移自愈（Watchdog）
 
 软件更新会静默重置你的安全配置（我们的生产环境里，TUN 开关被代理客户端更新重置了 4 次，系统时区被改回 8 次）。Watchdog 周期巡检 + 基线回滚 + 全程留痕，配置漂移从"事故"降级为"日志里的一行记录"。
@@ -216,7 +218,7 @@ bash core/claude-switch.sh diagnose-proxy --proxy http://127.0.0.1:18080
 - [x] Web 版环境检测页：手机/平板浏览器打开即测，零安装
 - [ ] 更多指纹维度：字体地区特征、Canvas/WebGL 渲染特征（Web 版已覆盖 Canvas/WebGL 展示，桌面版后续）
 - [x] 更多代理客户端适配：已支持 Clash Verge / Shadowrocket / sing-box / ClashX / Surge（含 auto 自动识别）
-- [ ] 快照切换提速：增量归档（只写差量）
+- [x] 快照切换提速：归档改为同卷移动 + 载入走 COW 克隆（APFS clonefile / Linux reflink），不再产生全量复制
 - [x] 应用内自动更新：launchd 每 12 小时自动检查更新，自检失败自动回滚，也可手动 `claude-switch.sh update` 保底
 
 > 有想优先看到的功能，去 [Issues](https://github.com/YOURSJEYO/claude-switcher/issues) 投票或提需求，热度高的先做。

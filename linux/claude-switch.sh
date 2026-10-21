@@ -206,43 +206,67 @@ quit_browser() {
 
 archive_current() {
     cur="$1"
-    rm -rf "$BASE/accounts/$cur.tmp"
-    cp -a "$DATA" "$BASE/accounts/$cur.tmp" && rm -rf "$BASE/accounts/$cur" && mv "$BASE/accounts/$cur.tmp" "$BASE/accounts/$cur"
-    log "已存档账号$cur(浏览器登录态)"
+    t0=$(date +%s)
+    # 归档=整体移走(同卷瞬时),跨卷 mv 自动退化为复制
+    rm -rf "$BASE/accounts/$cur.new"
+    if mv "$DATA" "$BASE/accounts/$cur.new" 2>/dev/null; then
+        rm -rf "$BASE/accounts/$cur"
+        mv "$BASE/accounts/$cur.new" "$BASE/accounts/$cur"
+    else
+        rm -rf "$BASE/accounts/$cur.tmp"
+        copy_tree "$DATA" "$BASE/accounts/$cur.tmp" && rm -rf "$BASE/accounts/$cur" && mv "$BASE/accounts/$cur.tmp" "$BASE/accounts/$cur"
+    fi
+    log "已存档账号$cur(浏览器登录态) ($(( $(date +%s) - t0 ))s)"
+}
+
+# 快照复制:btrfs/XFS 等支持 reflink 的文件系统上走 COW 秒级复制,其余回退普通全量复制
+copy_tree() {
+    src="$1"; dst="$2"
+    if [ "${CLAUDE_SWITCHER_NO_CLONE:-0}" != "1" ] && cp -a --reflink=auto "$src" "$dst" 2>/dev/null; then
+        return 0
+    fi
+    rm -rf "$dst"
+    cp -a "$src" "$dst"
 }
 
 switch_to() {
     target="$1"
     cur="none"; [ -f "$BASE/current" ] && cur=$(cat "$BASE/current")
+    just_archived=0
 
     if [ "$cur" = "none" ] && [ -d "$DATA" ] && [ -n "$(ls -A "$DATA" 2>/dev/null)" ]; then
         quit_browser || { echo "FAIL:浏览器未能退出,请手动关闭后重试"; return 1; }
         archive_current A
+        just_archived=1
         cur="A"; echo "$cur" > "$BASE/current"
         log "首次运行:当前浏览器登录态已收编为账号A"
         echo "NOTE:已将当前登录收编为账号A"
     fi
 
     if [ "$cur" = "$target" ]; then
+        if [ "$just_archived" = "1" ] && [ ! -d "$DATA" ] && [ -d "$BASE/accounts/$target" ]; then
+            copy_tree "$BASE/accounts/$target" "$DATA"
+        fi
         echo "INFO:当前已是账号$target"
         return 0
     fi
 
     quit_browser || { echo "FAIL:浏览器未能退出,请手动关闭后重试"; return 1; }
-    [ "$cur" != "none" ] && [ -d "$DATA" ] && archive_current "$cur"
+    [ "$just_archived" = "0" ] && [ "$cur" != "none" ] && [ -d "$DATA" ] && archive_current "$cur"
 
     rm -rf "$DATA.new"
+    t0=$(date +%s)
     if [ -d "$BASE/accounts/$target" ]; then
-        cp -a "$BASE/accounts/$target" "$DATA.new"
-        log "已载入账号$target 存档"
+        copy_tree "$BASE/accounts/$target" "$DATA.new"
+        log "已载入账号$target 存档 ($(( $(date +%s) - t0 ))s)"
     else
         mkdir -p "$DATA.new"
         log "账号$target 无存档,将以全新状态初始化"
     fi
     rm -rf "$DATA" && mv "$DATA.new" "$DATA"
     echo "$target" > "$BASE/current"
-    log "已切换到账号$target"
-    echo "OK:已切换到账号$target(请重新打开浏览器)"
+    log "已切换到账号$target ($(( $(date +%s) - t0 ))s)"
+    echo "OK:已切换到账号$target(请重新打开浏览器, 耗时$(( $(date +%s) - t0 ))s)"
 }
 
 menu() {
