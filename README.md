@@ -137,7 +137,7 @@ git clone https://github.com/YOURSJEYO/claude-switcher.git
 - **DNS 泄漏（近似）**：1.1.1.1 / Google DoH 公共加密解析可达性
 - **浏览器指纹展示**：Canvas 哈希、WebGL vendor/renderer、屏幕与设备参数（只展示，不阻断）
 
-纯前端、无追踪、无 localStorage；检测请求只发往公共 API，结果不上传。它只评估浏览器侧信号，**不替代桌面版 14 项审计**，也不检测 TUN / 保镖 / 进程级泄漏。部署方式与完整隐私说明见 [web/README.md](web/README.md)。
+纯前端、无追踪、无 localStorage；检测请求只发往公共 API，结果不上传。它只评估浏览器侧信号，**不替代桌面版 14 项审计**，也不检测 TUN / 保镖 / 进程级泄漏。部署方式与完整隐私说明见 [docs/WEB-README.md](docs/WEB-README.md)。
 
 ## 已有代理的独立诊断（macOS CLI）
 
@@ -180,7 +180,7 @@ bash core/claude-switch.sh diagnose-proxy --proxy http://127.0.0.1:18080
 │   └── stun-probe.py       # STUN 探针(手工协议实现)
 ├── windows/                # Windows 版(PowerShell 核心 + WPF 界面, Beta)
 ├── linux/                  # Linux 版(bash 核心 + systemd 保镖 + 终端菜单, Beta)
-├── web/                    # Web 版环境检测页(纯静态, GitHub Pages)
+├── docs/                   # Web 版环境检测页(index.html 等, GitHub Pages 从这里发布) + 项目文档
 ├── daemons/                # Kill-Switch / Watchdog / 自动更新 launchd 模板
 ├── installer/              # 双击安装/卸载
 ├── scripts/gen-sums.sh     # 重新生成 SHA256SUMS(改动 core/daemons/installer 后必跑)

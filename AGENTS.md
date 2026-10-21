@@ -110,7 +110,7 @@ Linux 用户使用 `linux/` 下的 bash 版本。**开始之前必须先理解�
 - 安装器：`installer/`
 - Windows 版：`windows/`（核心 `claude-switch.ps1` / 界面 `SwitcherUI.ps1` / 安装器 `install.ps1` / 保镖 `claude-bodyguard.ps1`）
 - Linux 版：`linux/`（核心 `claude-switch.sh` / 保镖 `claude-bodyguard.sh` / 安装器 `install.sh`）
-- Web 版：`web/`（纯静态环境检测页，GitHub Pages 从该目录发布）
+- Web 版：`docs/` 下的 index.html/app.js/style.css（纯静态环境检测页，GitHub Pages 从 docs/ 发布）
 
 ## 维护者本机纪律（Agent 必须遵守）
 

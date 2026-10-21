@@ -30,7 +30,7 @@ python3 -m http.server 8000 --directory web
 
 ## 部署到 GitHub Pages
 
-推荐直接从 `web/` 目录发布，不需要 Actions：
+推荐直接从 `docs/` 目录发布，不需要 Actions：
 
 1. 将仓库推送到 GitHub。
 2. 仓库 **Settings → Pages → Build and deployment**。
@@ -38,7 +38,7 @@ python3 -m http.server 8000 --directory web
 4. Branch 选择 `main`，Folder 选择 **`/web`**，保存。
 5. 等待 Pages 构建完成，访问 <https://yoursjeyo.github.io/claude-switcher/>。
 
-如果使用自定义 Actions 发布，也只需要把 `web/` 作为站点根目录发布，无需构建步骤。
+如果使用自定义 Actions 发布，也只需要把 `docs/` 作为站点根目录发布，无需构建步骤。
 
 ## 隐私说明
 
@@ -60,12 +60,12 @@ python3 -m http.server 8000 --directory web
 ## 文件结构
 
 ```
-web/
+docs/
 ├── index.html   # 页面结构、CSP、静态文案
 ├── style.css    # 暗色 + 紫色品牌样式，移动端优先
 ├── app.js       # 全部检测逻辑与安全 DOM 渲染
 ├── favicon.svg  # 品牌图标
-└── README.md    # 本文件
+└── WEB-README.md # 本文件
 ```
 
 修改后无需构建，刷新页面即可。浏览器要求：支持 `fetch`、`AbortController`、`RTCPeerConnection`、`Intl.DisplayNames` 的现代版本（Chrome / Edge / Safari / Firefox 近两年版本）。
