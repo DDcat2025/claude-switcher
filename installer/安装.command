@@ -50,6 +50,8 @@ if ! python3 --version >/dev/null 2>&1; then
 fi
 if ! command -v swiftc >/dev/null 2>&1; then
     echo "⚠️  未检测到 swiftc(界面 App 需要现场编译),请先运行: xcode-select --install"
+    echo "   注意:macOS 26/27 上仅装 Command Line Tools 可能因缺少 SwiftUIMacros 插件编译失败,"
+    echo "   如遇失败请安装完整 Xcode 并执行: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer"
     read -n 1 -s -r -p "按任意键退出..."; exit 1
 fi
 echo "✓ 前置检查通过($MODE / Claude / python3 / swiftc)"
@@ -148,7 +150,8 @@ if swiftc -O -parse-as-library -target "$(uname -m)-apple-macos13.0" \
     -framework SwiftUI -framework AppKit; then
     echo "✓ App 编译完成"
 else
-    echo "✗ App 编译失败,请确认 Xcode 命令行工具完整: xcode-select --install"
+    echo "✗ App 编译失败。若日志提示 SwiftUIMacros/插件缺失(macOS 26/27 常见),"
+    echo "  请安装完整 Xcode 后执行: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer"
     read -n 1 -s -r -p "按任意键退出..."; exit 1
 fi
 # 图标: assets/ 里有 PNG 源文件时现场生成 icns

@@ -21,13 +21,16 @@ final class VM: ObservableObject {
         CheckRow(name: "TUN 网卡", icon: "cable.connector"),
         CheckRow(name: "出口 IP", icon: "globe.americas"),
         CheckRow(name: "IP 与上次一致", icon: "checkmark.seal"),
-        CheckRow(name: "时区(纽约)", icon: "clock"),
-        CheckRow(name: "地区(美国)", icon: "flag"),
+        CheckRow(name: "时区", icon: "clock"),
+        CheckRow(name: "地区", icon: "flag"),
         CheckRow(name: "IPv6 关闭", icon: "6.circle"),
         CheckRow(name: "DNS 走隧道", icon: "magnifyingglass"),
         CheckRow(name: "WebRTC", icon: "eye.slash"),
         CheckRow(name: "保镖在线", icon: "hand.raised"),
         CheckRow(name: "规则置顶", icon: "list.number"),
+        CheckRow(name: "客户端语言", icon: "abc"),
+        CheckRow(name: "ASN 属性", icon: "building.columns"),
+        CheckRow(name: "生态可达性", icon: "antenna.radiowaves.left.and.right"),
     ]
     @Published var phase: Phase = .checking
     @Published var current = "?"
@@ -92,9 +95,10 @@ final class VM: ObservableObject {
             var matched = 0
             let keyMap: [String: String] = [
                 "代理内核": "代理内核", "TUN网卡": "TUN 网卡", "出口IP": "出口 IP",
-                "IP一致": "IP 与上次一致", "时区": "时区(纽约)", "地区": "地区(美国)",
+                "IP一致": "IP 与上次一致", "时区": "时区", "地区": "地区",
                 "IPv6": "IPv6 关闭", "DNS": "DNS 走隧道", "WebRTC": "WebRTC",
                 "保镖": "保镖在线", "规则置顶": "规则置顶",
+                "客户端语言": "客户端语言", "ASN属性": "ASN 属性", "生态可达性": "生态可达性",
             ]
             for line in out.split(separator: "\n") {
                 let parts = line.split(separator: "=", maxSplits: 1).map(String.init)
@@ -181,7 +185,7 @@ struct ContentView: View {
             }
             .padding(20)
         }
-        .frame(width: 440, height: 740)
+        .frame(width: 440, height: 860)
         .onAppear { vm.refresh() }
     }
 

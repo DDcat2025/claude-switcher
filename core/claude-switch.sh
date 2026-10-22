@@ -650,7 +650,50 @@ ASEOF
         fi
     fi
 
-    # C. 出口IP最终验证
+    # C. WebRTC 泄漏专项:在 TUN/IPv6 已处理后复测;UDP 仍绕过隧道时重载 TUN 再测一次
+    wrip=$(curl -s --max-time 8 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null | grep '^ip=' | cut -d= -f2)
+    wr=$(webrtc_test)
+    wr_leak() {
+        case "$1" in
+            RESULT:NONE|"") echo "" ;;
+            RESULT:*)
+                wrl=""
+                OLDIFS=$IFS; IFS=','
+                for w in ${1#RESULT:}; do
+                    [ -n "$2" ] && [ "$w" != "$2" ] && wrl="$wrl $w"
+                done
+                IFS=$OLDIFS
+                echo "${wrl# }" ;;
+            *) echo "" ;;
+        esac
+    }
+    leak=$(wr_leak "$wr" "$wrip")
+    if [ "$wr" = "RESULT:NONE" ]; then
+        echo "FIX:WebRTC ✓ (UDP不出网,零暴露)"
+    elif [ -z "$wr" ]; then
+        echo "FIX:WebRTC - 检测无结果(请确认 python3 与 stun-probe.py 就绪)"
+    elif [ -n "$leak" ] && [ "$PROXY_MODE" = "clash-verge" ] && tun_up; then
+        echo "FIX:WebRTC 泄漏($leak),重载 TUN 后复测..."
+        osascript -e 'tell application "Clash Verge" to quit' >/dev/null 2>&1
+        sleep 3
+        open -a "Clash Verge"
+        for i in $(seq 1 30); do tun_up && break; sleep 1; done
+        sleep 2
+        wr=$(webrtc_test)
+        leak=$(wr_leak "$wr" "$wrip")
+        if [ "$wr" = "RESULT:NONE" ] || [ -z "$leak" ]; then
+            echo "FIX:WebRTC ✓ (TUN 重载后 UDP 已回到隧道)"
+        else
+            echo "FIX:WebRTC ✗ 仍有 UDP 绕过隧道:${leak:-未知}"
+            echo "FIX:请确认 TUN 已开启且节点支持 UDP;浏览器插件只能保护该浏览器,保护不了 Claude 桌面版和其他应用"
+        fi
+    elif [ -n "$leak" ]; then
+        echo "FIX:WebRTC ✗ UDP 绕过隧道($leak) — 当前客户端无法自动重载,请开启 TUN/UDP 转发"
+    else
+        echo "FIX:WebRTC ✓ (仅暴露代理出口IP)"
+    fi
+
+    # D. 出口IP最终验证
     sleep 2
     trace=$(curl -s --max-time 8 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null)
     ip=$(echo "$trace" | grep '^ip=' | cut -d= -f2)
