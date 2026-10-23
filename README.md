@@ -250,7 +250,7 @@ bash core/claude-switch.sh diagnose-proxy --proxy http://127.0.0.1:18080
 - [ ] Windows 版稳定化：多客户端/地区自适应/TUN 通用判定已落地（静态验证通过），真机回归持续进行
 - [ ] Linux 版稳定化：多客户端/地区自适应/COW 快照已落地（桩测试通过），多发行版真机回归持续进行
 - [x] Web 版环境检测页：手机/平板浏览器打开即测，零安装
-- [x] 更多指纹维度：桌面端 `fingerprint` 命令覆盖字体地区特征 + GPU/虚拟机特征，Canvas/WebGL 由 Web 检测页覆盖（Web 版已覆盖 Canvas/WebGL 展示，桌面版后续）
+- [x] 更多指纹维度：桌面端 `fingerprint` 命令覆盖字体地区特征 + GPU/虚拟机特征，Canvas/WebGL 由 Web 检测页覆盖
 - [x] 更多代理客户端适配：已支持 Clash Verge / Shadowrocket / sing-box / ClashX / Surge（含 auto 自动识别）
 - [x] 快照切换提速：归档改为同卷移动 + 载入走 COW 克隆（APFS clonefile / Linux reflink），不再产生全量复制
 - [x] 应用内自动更新：launchd 每 12 小时自动检查更新，自检失败自动回滚，也可手动 `claude-switch.sh update` 保底
