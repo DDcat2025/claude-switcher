@@ -118,7 +118,7 @@ function Test-WebRTC($exitIp) {
     return @{ code = 'ok'; detail = '仅暴露代理IP' }
 }
 
-function Test-RulesPinned { Test-Path "$CLASH_DIR\clash-verge.yaml" -and (Select-String -Path "$CLASH_DIR\clash-verge.yaml" -Pattern "DOMAIN-SUFFIX,claude.ai,$PROXY_GROUP" -Quiet) }
+function Test-RulesPinned { Test-Path "$CLASH_DIR\clash-verge.yaml" -and (Select-String -Path "$CLASH_DIR\clash-verge.yaml" -Pattern "DOMAIN-SUFFIX,claude.ai,$PROXY_GROUP" -Quiet) -and (Select-String -Path "$CLASH_DIR\clash-verge.yaml" -Pattern "DST-PORT,3478," -Quiet) }
 
 function Invoke-CheckDetail {
     $pname = Get-ProxyName
@@ -240,6 +240,9 @@ prepend-rules:
   - DOMAIN-SUFFIX,intercom.io,$PROXY_GROUP
   - DOMAIN-SUFFIX,intercomcdn.com,$PROXY_GROUP
   - DOMAIN-SUFFIX,intercomassets.com,$PROXY_GROUP
+  - DST-PORT,3478,$PROXY_GROUP
+  - DST-PORT,5349,$PROXY_GROUP
+  - DST-PORT,19302,$PROXY_GROUP
 "@
         New-Item -ItemType Directory -Force -Path "$CLASH_DIR\profiles" | Out-Null
         $merge | Out-File -Encoding utf8 "$CLASH_DIR\profiles\Merge.yaml"

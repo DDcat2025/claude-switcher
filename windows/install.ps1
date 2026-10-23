@@ -163,6 +163,9 @@ prepend-rules:
   - DOMAIN-SUFFIX,intercom.io,$grp
   - DOMAIN-SUFFIX,intercomcdn.com,$grp
   - DOMAIN-SUFFIX,intercomassets.com,$grp
+  - DST-PORT,3478,$grp
+  - DST-PORT,5349,$grp
+  - DST-PORT,19302,$grp
 "@ | Out-File -Encoding utf8 "$CLASH_DIR\profiles\Merge.yaml"
     Write-Host "[OK] Claude 域名置顶规则已写入(重启 Clash Verge 后生效)" -ForegroundColor Green
 } elseif ($PROXY_MODE -eq 'clash-verge') {

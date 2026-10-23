@@ -165,6 +165,23 @@ bash core/claude-switch.sh diagnose-proxy --proxy http://127.0.0.1:18080
 
 ## 使用卫生与被封急救
 
+### WebRTC 泄漏与国内直连规则
+
+常见现象：TUN 正常、出口 IP 正确，但 WebRTC 检测失败，提示暴露了国内 IP。根因通常不是隧道坏了，而是规则集把 `stun.miwifi.com` / `stun.chat.bilibili.com` 这类国内 STUN 域名判为 **DIRECT 直连**——STUN 走的是 UDP，直连规则让它绕过了隧道。
+
+处理方式（按优先级）：
+
+1. **运行一次「一键修复」**：会在置顶规则里补充 `DST-PORT,3478 / 5349 / 19302` 三条端口级规则，把**所有** STUN/TURN 标准端口的 UDP 流量强制拉回代理（不只那两个域名），然后自动重启 Clash Verge 复测
+2. 手动等价操作：Clash Verge → 全局扩展配置(Merge.yaml) → prepend-rules 顶部加：
+   ```yaml
+   - DST-PORT,3478,IpEqual
+   - DST-PORT,5349,IpEqual
+   - DST-PORT,19302,IpEqual
+   ```
+3. 开全局代理也能消除该告警，但属于过度代理——会让所有国内流量绕路，通常不需要
+
+注意：浏览器插件只能保护该浏览器；系统级根治是让 UDP 进隧道。Claude 自身不用国内 STUN，但你的规则只要允许任意 UDP 直连，其他应用/网页就有暴露真实 IP 的通道。
+
 工具能兜底技术泄漏，兜不住主动作死。以下每条都是社区里用账号堆出来的教训：
 
 - **先退出 Claude，再断/换代理**。断线重连的那几秒是全年最高危时刻——保镖会兜底杀进程，但正确姿势永远是先退客户端再动网络，不要反过来挑战物理

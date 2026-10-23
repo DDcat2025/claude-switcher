@@ -92,6 +92,12 @@ merge_ok() {
     grep -q "DOMAIN-SUFFIX,claude.ai,$PROXY_GROUP" "$CLASH_DIR/clash-verge.yaml" 2>/dev/null
 }
 
+# STUN/TURN 端口置顶是否已生效(国内直连规则会把 stun.miwifi.com 等判直连,UDP 需按端口强制进隧道)
+stun_ok() {
+    grep -q 'DST-PORT,3478,' "$CLASH_DIR/clash-verge.yaml" 2>/dev/null \
+        || grep -q 'DST-PORT,3478,' "$CLASH_DIR/profiles/Merge.yaml" 2>/dev/null
+}
+
 # 置顶规则行为检测:三个生态域名全部解析到 fake-ip 段(198.18.x.x)即视为已置顶;未命中域名记入 ROUTE_MISSED
 route_ok() {
     ROUTE_MISSED=""
@@ -253,6 +259,11 @@ write_merge_rules() {
         rules="$rules  - DOMAIN-SUFFIX,$d,$PROXY_GROUP
 "
     done
+    # STUN/TURN 标准端口置顶:国内直连规则会把 stun.miwifi.com 等判直连,UDP 需按端口强制进隧道
+    for p in 3478 5349 19302; do
+        rules="$rules  - DST-PORT,$p,$PROXY_GROUP
+"
+    done
 
     # 首次:文件不存在,整文件写入
     if [ ! -f "$M" ]; then
@@ -392,7 +403,7 @@ EOF
 
     # D. 置顶规则(仅 Clash Verge 智能合并写入;其他客户端行为检测不通过时提示手动)
     if [ "$PROXY_MODE" = "clash-verge" ]; then
-        if ! merge_ok && ! route_ok; then
+        if ! merge_ok || ! stun_ok || ! route_ok; then
             echo "FIX:写入置顶规则(智能合并,不动你的已有配置)..."
             write_merge_rules && echo "FIX:置顶规则已写入(请重启 Clash Verge 生效)" || echo "FIX:置顶规则 ✗(写入失败)"
         fi
