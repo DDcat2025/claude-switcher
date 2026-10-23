@@ -859,6 +859,42 @@ self_update() {
     return 0
 }
 
+# 设备指纹体检:字体地区特征 + GPU/虚拟机特征(Canvas/WebGL 由 Web 检测页覆盖)
+fingerprint() {
+    echo "# 设备指纹体检 $(date '+%F %T')"
+    hits=""
+    for d in /Library/Fonts "$HOME/Library/Fonts"; do
+        [ -d "$d" ] || continue
+        while IFS= read -r f; do
+            b=$(basename "$f" | tr '[:upper:]' '[:lower:]')
+            case "$b" in
+                *simsun*|*simhei*|*simkai*|*simfang*|*msyh*|*msjh*|*dengxian*|*wqy*|*fzshu*|*fzkai*|*fzhei*|*fangsong*) hits="$hits $b" ;;
+            esac
+        done < <(find "$d" -type f \( -iname '*.ttf' -o -iname '*.ttc' -o -iname '*.otf' \) 2>/dev/null)
+    done
+    if [ -n "$hits" ]; then
+        echo "字体=warn:检测到地区特征字体:${hits# }"
+        echo "建议=上述字体通常随中文办公软件安装,美区环境很少出现;不用的可在字体册停用"
+    else
+        echo "字体=ok:未发现中文办公字体(仅系统自带字体)"
+    fi
+
+    gpu=$(system_profiler SPDisplaysDataType 2>/dev/null)
+    chip=$(echo "$gpu" | grep -m1 'Chipset Model' | sed 's/.*: //')
+    res=$(echo "$gpu" | grep -m1 'Resolution' | sed 's/.*: //')
+    [ -z "$chip" ] && chip="未知"
+    echo "GPU=ok:${chip}"
+    echo "显示=ok:${res:-未知}"
+    virt=$(sysctl -n kern.hv_vmm_present 2>/dev/null)
+    case "$chip" in
+        *Virtual*|*VMware*|*Parallels*|*VirtualBox*|*SwiftShader*|*llvmpipe*)
+            echo "虚拟机=warn:检测到虚拟 GPU($chip),这是强指纹" ;;
+        *)
+            [ "$virt" = "1" ] && echo "虚拟机=warn:运行在虚拟机中" || echo "虚拟机=ok:物理机" ;;
+    esac
+    echo "CanvasWebGL=info:原生检查读不到 Claude Electron 的渲染特征,请打开 Web 检测页 https://yoursjeyo.github.io/claude-switcher/ 查看 Canvas/WebGL 指纹"
+}
+
 status() {
     cur="none"; [ -f "$BASE/current" ] && cur=$(cat "$BASE/current")
     hasA=0; [ -d "$BASE/accounts/A" ] && hasA=1
@@ -965,5 +1001,6 @@ case "${1:-}" in
     set-region) set_region ;;
     update) self_update "${2:-}" ;;
     write-merge-rules) write_merge_rules ;;  # 隐藏入口:供安装器调用,保证两处合并逻辑一致
-    *) echo "用法: claude-switch.sh check|checkdetail|fix|status|switch A|B|set-region|update [--auto]|diagnose-proxy [--proxy URL|--config FILE]"; exit 2 ;;
+    fingerprint) fingerprint ;;
+    *) echo "用法: claude-switch.sh check|checkdetail|fix|status|switch A|B|set-region|update [--auto]|fingerprint|diagnose-proxy [--proxy URL|--config FILE]"; exit 2 ;;
 esac

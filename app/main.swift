@@ -37,6 +37,7 @@ final class VM: ObservableObject {
     @Published var hasB = false
     @Published var banner = ""
     @Published var note = ""
+    @Published var fingerprint = ""
 
     let core = NSHomeDirectory() + "/.local/bin/claude-switch.sh"
 
@@ -167,6 +168,7 @@ final class VM: ObservableObject {
 struct ContentView: View {
     @StateObject private var vm = VM()
     @State private var showNotice = false
+    @State private var showFingerprint = false
 
     var body: some View {
         ZStack {
@@ -202,6 +204,15 @@ struct ContentView: View {
                 Text("安全检查 · 切换 · 启动").font(.caption).foregroundColor(.white.opacity(0.55))
             }
             Spacer()
+            Button {
+                vm.fingerprint = "正在体检…"
+                showFingerprint = true
+                vm.run(["fingerprint"], timeout: 90) { vm.fingerprint = $0 }
+            } label: {
+                Image(systemName: "waveform.path.ecg").font(.title3).foregroundColor(.white.opacity(0.6))
+            }
+            .buttonStyle(.plain)
+            .help("设备指纹体检(字体/GPU/虚拟机)")
             Button { showNotice = true } label: {
                 Image(systemName: "info.circle").font(.title3).foregroundColor(.white.opacity(0.6))
             }
@@ -210,6 +221,7 @@ struct ContentView: View {
             statusPill
         }
         .sheet(isPresented: $showNotice) { NoticeView() }
+        .sheet(isPresented: $showFingerprint) { FingerprintView(text: vm.fingerprint) }
     }
 
     var statusPill: some View {
@@ -368,6 +380,35 @@ struct ContentView: View {
             Text("任何一项检查不过，都不会启动 Claude").font(.caption2)
         }
         .foregroundColor(.white.opacity(0.35))
+    }
+}
+
+// MARK: - 设备指纹体检
+
+struct FingerprintView: View {
+    @Environment(\.dismiss) private var dismiss
+    let text: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("设备指纹体检").font(.headline).foregroundColor(.white)
+                Spacer()
+                Button("关闭") { dismiss() }.buttonStyle(.borderedProminent).tint(.indigo)
+            }
+            Text("字体地区特征 + GPU/虚拟机特征；Canvas/WebGL 请用 Web 检测页")
+                .font(.caption).foregroundColor(.white.opacity(0.55))
+            ScrollView {
+                Text(text.isEmpty ? "正在体检…" : text)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.9))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(20)
+        .frame(width: 520, height: 420)
+        .background(Color(red: 0.07, green: 0.08, blue: 0.13))
     }
 }
 

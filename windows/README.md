@@ -56,6 +56,7 @@ TUN 判定顺序：先看是否存在 `198.18.x.x` 假 IP（Clash 系 fake-ip）
 
 ## 已知限制
 
+- 设备指纹体检（`fingerprint`）与 Web 检测页为 macOS/浏览器能力，Windows 版暂未内置，可用 Web 版检查 Canvas/WebGL。
 - 界面是 WPF 重写的第一版,样式以 Mac 版为准对齐,细节可能有出入
 - Clash Verge 的 TUN 开关在 Windows 上如果被更新重置,目前需要手动在设置里重新打开(一键修复会提示)
 - 账号快照切换前请确保 Claude 已完全退出(托盘图标也要退出)
