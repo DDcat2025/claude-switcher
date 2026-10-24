@@ -913,16 +913,55 @@ quit_claude() {
 }
 
 archive_current() {
-    cur="$1"
+    local cur="$1"
+    local t0 staged current previous moved=0 had_old=0
     t0=$(date +%s)
-    # 归档=把当前数据目录整体移走(同卷瞬时,跨卷 mv 自动退化为复制),不再全量深拷贝
-    rm -rf "$BASE/accounts/$cur.new"
-    if mv "$DATA" "$BASE/accounts/$cur.new" 2>/dev/null; then
-        rm -rf "$BASE/accounts/$cur"
-        mv "$BASE/accounts/$cur.new" "$BASE/accounts/$cur"
+    staged="$BASE/accounts/$cur.new"
+    current="$BASE/accounts/$cur"
+    previous="$BASE/accounts/$cur.previous"
+
+    # An interrupted archive may be the only remaining copy. Never clear it
+    # automatically, or delete the previous snapshot before the new one commits.
+    if [ -e "$staged" ] || [ -L "$staged" ] || [ -e "$previous" ] || [ -L "$previous" ]; then
+        log "FAIL:账号$cur 存在待恢复快照，拒绝覆盖"
+        return 1
+    fi
+    if mv "$DATA" "$staged" 2>/dev/null; then
+        moved=1
     else
-        rm -rf "$BASE/accounts/$cur.tmp"
-        copy_tree "$DATA" "$BASE/accounts/$cur.tmp" && rm -rf "$BASE/accounts/$cur" && mv "$BASE/accounts/$cur.tmp" "$BASE/accounts/$cur"
+        # A cross-volume move may leave a partial destination on failure.
+        if [ -e "$staged" ] || [ -L "$staged" ]; then
+            log "FAIL:账号$cur 归档移动不完整，保留现场"
+            return 1
+        fi
+        if ! copy_tree "$DATA" "$staged"; then
+            log "FAIL:账号$cur 归档复制失败，保留现场"
+            return 1
+        fi
+    fi
+
+    if [ -e "$current" ] || [ -L "$current" ]; then
+        if ! mv "$current" "$previous"; then
+            if [ "$moved" -eq 1 ]; then
+                mv "$staged" "$DATA" || log "WARN:账号$cur 数据保留在暂存位置"
+            fi
+            log "FAIL:账号$cur 旧快照无法安全转存"
+            return 1
+        fi
+        had_old=1
+    fi
+    if ! mv "$staged" "$current"; then
+        if [ "$had_old" -eq 1 ]; then
+            mv "$previous" "$current" || log "WARN:账号$cur 旧快照保留在恢复位置"
+        fi
+        if [ "$moved" -eq 1 ]; then
+            mv "$staged" "$DATA" || log "WARN:账号$cur 当前数据保留在暂存位置"
+        fi
+        log "FAIL:账号$cur 归档提交失败"
+        return 1
+    fi
+    if [ "$had_old" -eq 1 ]; then
+        rm -rf "$previous" || log "WARN:账号$cur 旧快照副本需手动清理"
     fi
     log "已存档账号$cur ($(( $(date +%s) - t0 ))s)"
 }
@@ -945,7 +984,7 @@ switch_to() {
     # 首次运行:把当前登录中的状态收编为账号A
     if [ "$cur" = "none" ] && [ -d "$DATA" ] && [ -n "$(ls -A "$DATA" 2>/dev/null)" ]; then
         quit_claude || { echo "FAIL:Claude 未能退出，请手动退出后重试"; return 1; }
-        archive_current A
+        archive_current A || { echo "FAIL:首次账号归档失败，已停止切换"; return 1; }
         just_archived=1
         cur="A"; echo "$cur" > "$BASE/current"
         log "首次运行:当前登录状态已收编为账号A"
@@ -964,7 +1003,9 @@ switch_to() {
 
     quit_claude || { echo "FAIL:Claude 未能退出，请手动退出后重试"; return 1; }
 
-    [ "$just_archived" = "0" ] && [ "$cur" != "none" ] && [ -d "$DATA" ] && archive_current "$cur"
+    if [ "$just_archived" = "0" ] && [ "$cur" != "none" ] && [ -d "$DATA" ]; then
+        archive_current "$cur" || { echo "FAIL:账号$cur 归档失败，已停止切换"; return 1; }
+    fi
 
     rm -rf "$DATA.new"
     t0=$(date +%s)
