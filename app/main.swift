@@ -15,6 +15,31 @@ struct CheckRow: Identifiable {
 
 enum Phase { case checking, ready, failed, switching, done, fixing }
 
+struct CoreResult {
+    let output: String
+    let succeeded: Bool
+}
+
+// 超时回调与 waitUntilExit 在不同队列上执行。
+private final class ProcessDeadline {
+    private let lock = NSLock()
+    private var expired = false
+
+    func expire(_ process: Process) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard process.isRunning else { return }
+        expired = true
+        process.terminate()
+    }
+
+    var timedOut: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return expired
+    }
+}
+
 final class VM: ObservableObject {
     @Published var rows: [CheckRow] = [
         CheckRow(name: "代理内核", icon: "cpu"),
@@ -34,66 +59,109 @@ final class VM: ObservableObject {
     ]
     @Published var phase: Phase = .checking
     @Published var current = "?"
+    @Published var hasA = false
     @Published var hasB = false
     @Published var banner = ""
     @Published var note = ""
     @Published var fingerprint = ""
+    @Published private(set) var isBusy = false
+    @Published private(set) var lastCheckSummary = "尚未检查"
 
-    let core = NSHomeDirectory() + "/.local/bin/claude-switch.sh"
+    let core: String
+    private let checkTimeout: TimeInterval
+    private let operationTimeout: TimeInterval
+    private var started = false
+    private var switchRequested = false
+    private var hideAfterSwitch: DispatchWorkItem?
+    var onSwitchCompleted: (() -> Void)?
 
-    func run(_ args: [String], timeout: TimeInterval = 45, done: @escaping (String) -> Void) {
+    init(core: String = NSHomeDirectory() + "/.local/bin/claude-switch.sh",
+         checkTimeout: TimeInterval = 45, operationTimeout: TimeInterval = 180) {
+        self.core = core
+        self.checkTimeout = checkTimeout
+        self.operationTimeout = operationTimeout
+    }
+
+    var canQuit: Bool { !switchRequested && phase != .fixing && phase != .switching }
+
+    func start() {
+        guard !started else { return }
+        started = true
+        refresh()
+    }
+
+    func prepareToShow() {
+        hideAfterSwitch?.cancel()
+        if phase == .done { phase = .ready }
+    }
+
+    private func run(_ args: [String], timeout: TimeInterval = 45, done: @escaping (CoreResult) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async {
-            let started = Date()
-            let tmp = "/tmp/switcher-out-\(UUID().uuidString).txt"
-            FileManager.default.createFile(atPath: tmp, contents: nil)
-            let p = Process()
-            p.launchPath = "/bin/bash"
-            p.arguments = [self.core] + args
-            if let fh = try? FileHandle(forWritingTo: URL(fileURLWithPath: tmp)) {
-                p.standardOutput = fh
-                p.standardError = fh
-            }
-            var timedOut = false
-            let watchdog = DispatchWorkItem {
-                if p.isRunning { timedOut = true; p.terminate() }
-            }
-            DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: watchdog)
-            do { try p.launch() } catch {
-                DispatchQueue.main.async { done("FAIL:无法启动脚本 \(error.localizedDescription)") }
+            let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("switcher-out-\(UUID().uuidString).txt")
+            guard FileManager.default.createFile(atPath: tmp.path, contents: nil, attributes: [.posixPermissions: 0o600]),
+                  let fh = try? FileHandle(forWritingTo: tmp) else {
+                DispatchQueue.main.async { done(CoreResult(output: "无法创建检查输出文件", succeeded: false)) }
                 return
             }
+            defer {
+                try? fh.close()
+                try? FileManager.default.removeItem(at: tmp)
+            }
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/bin/bash")
+            p.arguments = [self.core] + args
+            p.standardOutput = fh
+            p.standardError = fh
+            do { try p.run() } catch {
+                DispatchQueue.main.async { done(CoreResult(output: "无法启动脚本：\(error.localizedDescription)", succeeded: false)) }
+                return
+            }
+            let deadline = ProcessDeadline()
+            let watchdog = DispatchWorkItem { deadline.expire(p) }
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: watchdog)
             p.waitUntilExit()
             watchdog.cancel()
-            if let fh = p.standardOutput as? FileHandle { try? fh.close() }
-            let data = (try? Data(contentsOf: URL(fileURLWithPath: tmp))) ?? Data()
-            let out = String(decoding: data, as: UTF8.self)  // 容错解码:坏字节替换而非整体失败
-            try? FileManager.default.removeItem(atPath: tmp)
-            let dbg = "[\(Date())] args=\(args) timedOut=\(timedOut) exit=\(p.terminationStatus) 耗时\(String(format: "%.1f", Date().timeIntervalSince(started)))s stdout=\(out.count)字符\n"
-            if let h = try? FileHandle(forWritingTo: URL(fileURLWithPath: "/tmp/switcher-debug.log")) {
-                h.seekToEndOfFile(); h.write(dbg.data(using: .utf8)!); h.closeFile()
-            } else { try? dbg.write(toFile: "/tmp/switcher-debug.log", atomically: true, encoding: .utf8) }
-            if timedOut {
-                DispatchQueue.main.async { done("FAIL:操作超时，请重试") }
-                return
+            let data = (try? Data(contentsOf: tmp)) ?? Data()
+            let out = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            let result: CoreResult
+            if deadline.timedOut {
+                result = CoreResult(output: "操作超时，请重试", succeeded: false)
+            } else if p.terminationStatus != 0 {
+                result = CoreResult(output: "脚本执行失败（退出码 \(p.terminationStatus)）\n\(out)", succeeded: false)
+            } else {
+                result = CoreResult(output: out, succeeded: true)
             }
-            DispatchQueue.main.async { done(out.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            DispatchQueue.main.async { done(result) }
         }
     }
 
     func refresh() {
+        guard !isBusy else { return }
+        hideAfterSwitch?.cancel()
+        isBusy = true
+        checkEnvironment { _ in self.isBusy = false }
+    }
+
+    func refreshAccountStatus() {
+        // 菜单展开时只读取本地账号状态，不触发网络审计；启动审计优先。
+        guard started, !isBusy else { return }
+        isBusy = true
+        run(["status"], timeout: checkTimeout) { result in
+            self.updateStatus(result)
+            self.isBusy = false
+        }
+    }
+
+    private func checkEnvironment(done: @escaping (Bool) -> Void) {
         phase = .checking
+        lastCheckSummary = "检查中"
         banner = ""
         note = ""
         for i in rows.indices { rows[i].state = .pending; rows[i].detail = "" }
-        run(["checkdetail"]) { out in
-            // 输出为空时回退到脚本落盘的结果文件(双保险)
-            var raw = out
-            if raw.isEmpty, let diskData = try? Data(contentsOf: URL(fileURLWithPath: NSHomeDirectory() + "/.claude-switcher/last-check.txt")), !diskData.isEmpty {
-                raw = String(decoding: diskData, as: UTF8.self)
-            }
-            let out = raw
-            var allOk = true
-            var matched = 0
+        run(["checkdetail"], timeout: checkTimeout) { result in
+            var allOk = result.succeeded
+            var matched = Set<Int>()
+            var duplicated = false
             let keyMap: [String: String] = [
                 "代理内核": "代理内核", "TUN网卡": "TUN 网卡", "出口IP": "出口 IP",
                 "IP一致": "IP 与上次一致", "时区": "时区", "地区": "地区",
@@ -101,64 +169,126 @@ final class VM: ObservableObject {
                 "保镖": "保镖在线", "规则置顶": "规则置顶",
                 "客户端语言": "客户端语言", "ASN属性": "ASN 属性", "生态可达性": "生态可达性",
             ]
-            for line in out.split(separator: "\n") {
-                let parts = line.split(separator: "=", maxSplits: 1).map(String.init)
-                guard parts.count == 2 else { continue }
-                let rhs = parts[1]
-                let status = rhs.split(separator: ":", maxSplits: 1).map(String.init)
-                let code = status[0]
-                let detail = status.count > 1 ? status[1] : ""
-                guard let rowName = keyMap[parts[0]], let idx = self.rows.firstIndex(where: { $0.name == rowName }) else { continue }
-                matched += 1
-                switch code {
+            for line in result.output.split(separator: "\n") {
+                let parts = line.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+                guard parts.count == 2, let rowName = keyMap[parts[0]],
+                      let idx = self.rows.firstIndex(where: { $0.name == rowName }) else { continue }
+                // 重复行不能补齐缺失项，也不能用后来的 ok 覆盖先前的 fail。
+                guard matched.insert(idx).inserted else { allOk = false; duplicated = true; continue }
+                let status = parts[1].split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+                switch status.first ?? "" {
                 case "ok": self.rows[idx].state = .ok
                 case "warn": self.rows[idx].state = .warn
                 default: self.rows[idx].state = .fail; allOk = false
                 }
-                self.rows[idx].detail = detail
+                self.rows[idx].detail = status.count > 1 ? status[1] : ""
             }
-            self.run(["status"]) { st in
-                self.current = st.contains("current=B") ? "B" : (st.contains("current=A") ? "A" : "未初始化")
-                self.hasB = st.contains("hasB=1")
-                if matched < self.rows.count {
-                    self.banner = "检测输出不完整(\(matched)/\(self.rows.count))，请点重新检查"
-                    self.phase = .failed
-                } else {
-                    self.phase = allOk ? .ready : .failed
+            if !result.succeeded {
+                self.banner = result.output
+            } else if duplicated {
+                self.banner = "检测输出存在重复项，请重新检查"
+            } else if matched.count != self.rows.count {
+                self.banner = "检测输出不完整(\(matched.count)/\(self.rows.count))，请点重新检查"
+            }
+            let passed = allOk && matched.count == self.rows.count
+            self.lastCheckSummary = passed ? (self.rows.contains { $0.state == .warn } ? "有警告" : "通过") : "失败"
+            self.run(["status"], timeout: self.checkTimeout) { status in
+                let statusOK = self.updateStatus(status)
+                if !statusOK {
+                    self.banner = "无法读取账号状态，请重新检查"
+                    self.lastCheckSummary = "失败"
                 }
+                self.phase = passed && statusOK ? .ready : .failed
+                done(passed && statusOK)
             }
         }
     }
 
+    @discardableResult
+    private func updateStatus(_ result: CoreResult) -> Bool {
+        let fields = result.output.split(whereSeparator: { $0.isWhitespace }).reduce(into: [String: String]()) { values, field in
+            let pair = field.split(separator: "=", maxSplits: 1).map(String.init)
+            if pair.count == 2 { values[pair[0]] = pair[1] }
+        }
+        guard result.succeeded, let account = fields["current"], ["A", "B", "none"].contains(account),
+              let a = fields["hasA"], let b = fields["hasB"], ["0", "1"].contains(a), ["0", "1"].contains(b) else {
+            current = "未知"; hasA = false; hasB = false
+            return false
+        }
+        current = account == "none" ? "未初始化" : account
+        hasA = a == "1"; hasB = b == "1"
+        return true
+    }
+
     func fixAll() {
+        guard !isBusy else { return }
+        hideAfterSwitch?.cancel()
+        isBusy = true
         phase = .fixing
         banner = "正在修复…（若弹出密码框请输入开机密码）"
-        run(["fix"], timeout: 180) { out in
-            let steps = out.split(separator: "\n").map(String.init).filter { $0.hasPrefix("FIX:") }.map { String($0.dropFirst(4)) }
-            self.banner = steps.last ?? ""
-            self.refresh()
+        run(["fix"], timeout: operationTimeout) { result in
+            guard result.succeeded else {
+                self.banner = result.output; self.phase = .failed; self.isBusy = false
+                return
+            }
+            self.checkEnvironment { _ in self.isBusy = false }
+        }
+    }
+
+    func inspectFingerprint() {
+        guard !isBusy else { return }
+        isBusy = true
+        fingerprint = "正在体检…"
+        run(["fingerprint"], timeout: 90) { result in
+            self.fingerprint = result.output
+            self.isBusy = false
         }
     }
 
     func switchTo(_ target: String) {
+        guard !isBusy, ["A", "B"].contains(target) else { return }
+        hideAfterSwitch?.cancel()
+        isBusy = true
+        switchRequested = true
+        // 常驻后旧检查可能已经过期。每次切换都重新审计，不使用落盘的旧结果放行。
+        checkEnvironment { passed in
+            guard passed else {
+                self.switchRequested = false; self.isBusy = false
+                return
+            }
+            self.performSwitch(target)
+        }
+    }
+
+    private func performSwitch(_ target: String) {
         phase = .switching
         banner = "正在切换到账号 \(target)…"
-        run(["switch", target], timeout: 180) { out in
-            if out.hasPrefix("FAIL:") {
+        run(["switch", target], timeout: operationTimeout) { result in
+            let lines = result.output.split(separator: "\n").map(String.init)
+            let failure = lines.first { $0.hasPrefix("FAIL:") }
+            let success = lines.contains { $0.hasPrefix("OK:") || $0.hasPrefix("INFO:") }
+            guard result.succeeded, failure == nil, success else {
                 self.phase = .failed
-                self.banner = String(out.dropFirst(5))
+                self.banner = failure.map { String($0.dropFirst(5)) } ?? (result.output.isEmpty ? "切换未返回成功结果，请重新检查" : result.output)
+                self.switchRequested = false; self.isBusy = false
                 return
             }
             var extra = ""
             if target == "B" && !self.hasB { extra = "B 号首次使用：请在打开的 Claude 里登录 B 账号，登录一次即可。" }
-            if out.hasPrefix("INFO:") { extra = "" }
+            let unchanged = lines.contains { $0.hasPrefix("INFO:") }
+            if unchanged { extra = "" }
             self.current = target
             self.phase = .done
-            self.banner = out.hasPrefix("INFO:") ? "当前已是账号 \(target)" : "已切换到账号 \(target)"
+            self.banner = unchanged ? "当前已是账号 \(target)" : "已切换到账号 \(target)"
             self.note = extra
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) {
-                NSApplication.shared.terminate(nil)
+            self.switchRequested = false; self.isBusy = false
+            let hide = DispatchWorkItem { [weak self] in
+                guard let self = self, self.phase == .done, !self.isBusy else { return }
+                self.onSwitchCompleted?()
+                self.phase = .ready
             }
+            self.hideAfterSwitch = hide
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.2, execute: hide)
         }
     }
 }
@@ -166,7 +296,8 @@ final class VM: ObservableObject {
 // MARK: - 视图
 
 struct ContentView: View {
-    @StateObject private var vm = VM()
+    @ObservedObject var vm: VM
+    var height: CGFloat = 860
     @State private var showNotice = false
     @State private var showFingerprint = false
 
@@ -187,8 +318,7 @@ struct ContentView: View {
             }
             .padding(20)
         }
-        .frame(width: 440, height: 860)
-        .onAppear { vm.refresh() }
+        .frame(width: 440, height: height)
     }
 
     var header: some View {
@@ -205,18 +335,20 @@ struct ContentView: View {
             }
             Spacer()
             Button {
-                vm.fingerprint = "正在体检…"
                 showFingerprint = true
-                vm.run(["fingerprint"], timeout: 90) { vm.fingerprint = $0 }
+                vm.inspectFingerprint()
             } label: {
                 Image(systemName: "waveform.path.ecg").font(.title3).foregroundColor(.white.opacity(0.6))
             }
             .buttonStyle(.plain)
+            .disabled(vm.isBusy)
+            .accessibilityLabel("设备指纹体检")
             .help("设备指纹体检(字体/GPU/虚拟机)")
             Button { showNotice = true } label: {
                 Image(systemName: "info.circle").font(.title3).foregroundColor(.white.opacity(0.6))
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("安全防护体系公告")
             .help("安全防护体系公告")
             statusPill
         }
@@ -304,7 +436,7 @@ struct ContentView: View {
                     Spacer()
                 }
                 HStack(spacing: 10) {
-                    accountButton("A", subtitle: vm.current == "A" ? "当前" : "已建档")
+                    accountButton("A", subtitle: vm.current == "A" ? "当前" : (vm.hasA ? "已建档" : "未初始化"))
                     accountButton("B", subtitle: vm.current == "B" ? "当前" : (vm.hasB ? "已建档" : "未初始化"))
                 }
             }
@@ -331,6 +463,7 @@ struct ContentView: View {
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(vm.current == t ? Color.indigo : Color.white.opacity(0.1), lineWidth: 1.2))
         }
         .buttonStyle(.plain)
+        .disabled(vm.isBusy)
     }
 
     var retryCard: some View {
@@ -355,6 +488,7 @@ struct ContentView: View {
                             .clipShape(Capsule())
                     }
                     .buttonStyle(.plain)
+                    .disabled(vm.isBusy)
                     Button { vm.refresh() } label: {
                         Label("重新检查", systemImage: "arrow.clockwise")
                             .font(.callout.bold())
@@ -364,6 +498,7 @@ struct ContentView: View {
                             .clipShape(Capsule())
                     }
                     .buttonStyle(.plain)
+                    .disabled(vm.isBusy)
                 }
             }
         }
@@ -479,38 +614,134 @@ struct NoticeView: View {
 
 // MARK: - App
 
-class AppDelegate: NSObject, NSApplicationDelegate {
-    // 关闭窗口即退出进程,杜绝"旧实例残留"
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+    let vm: VM
+    private(set) var mainWindow: NSWindow?
+
+    override init() {
+        vm = VM()
+        super.init()
+    }
+
+    // 隔离测试可注入假核心脚本，不需要修改 HOME 或接触真实账号。
+    init(vm: VM) {
+        self.vm = vm
+        super.init()
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApplication.shared.setActivationPolicy(.accessory)
+        vm.onSwitchCompleted = { [weak self] in self?.mainWindow?.orderOut(nil) }
+        showMainWindow()
+        vm.start()
+    }
+
+    func showMainWindow() {
+        vm.prepareToShow()
+        if mainWindow == nil {
+            let style: NSWindow.StyleMask = [.titled, .closable, .miniaturizable]
+            let titleHeight = NSWindow.frameRect(forContentRect: .zero, styleMask: style).height
+            let height = min(CGFloat(860), (NSScreen.main?.visibleFrame.height ?? 900) - titleHeight)
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 440, height: height),
+                styleMask: style,
+                backing: .buffered, defer: false
+            )
+            window.title = "Claude切换器"
+            window.titlebarAppearsTransparent = true
+            window.titleVisibility = .hidden
+            window.isMovableByWindowBackground = true
+            window.isReleasedWhenClosed = false
+            window.standardWindowButton(.zoomButton)?.isEnabled = false
+            window.contentView = NSHostingView(rootView: ContentView(vm: vm, height: height))
+            window.delegate = self
+            window.center()
+            mainWindow = window
+        }
+        if mainWindow?.isMiniaturized == true { mainWindow?.deminiaturize(nil) }
+        mainWindow?.makeKeyAndOrderFront(nil)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        sender.orderOut(nil)
+        return false
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        vm.canQuit ? .terminateNow : .terminateCancel
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showMainWindow()
+        return false
+    }
 }
 
+struct MenuBarContent: View {
+    @ObservedObject var vm: VM
+    let showWindow: () -> Void
+
+    var body: some View {
+        Text("Claude 切换器")
+        Text("当前账号：\(vm.current)")
+        Text("最近检查：\(vm.lastCheckSummary)")
+        if vm.phase == .fixing { Text("正在修复…") }
+        if vm.phase == .switching { Text("正在切换账号…") }
+        Divider()
+        Button("打开主窗口", action: showWindow)
+            .keyboardShortcut("o")
+        Button("重新检查") {
+            showWindow()
+            vm.refresh()
+        }
+        .disabled(vm.isBusy)
+        Divider()
+        Button("退出 Claude 切换器") { NSApplication.shared.terminate(nil) }
+            .keyboardShortcut("q")
+            .disabled(!vm.canQuit)
+            .onAppear { vm.refreshAccountStatus() }
+    }
+}
+
+// 生产应用与 UI 测试共用完全相同的菜单和窗口管理。
+struct SwitcherMenu: Scene {
+    @ObservedObject var vm: VM
+    let controller: AppDelegate
+
+    private static let statusImage: NSImage = {
+        let image = NSImage(systemSymbolName: "shield.lefthalf.filled", accessibilityDescription: "Claude 切换器")!
+        image.isTemplate = true
+        return image
+    }()
+
+    var body: some Scene {
+        MenuBarExtra {
+            MenuBarContent(vm: vm, showWindow: controller.showMainWindow)
+        } label: {
+            Image(nsImage: Self.statusImage)
+                .accessibilityLabel("Claude 切换器")
+        }
+        .menuBarExtraStyle(.menu)
+        .commands {
+            CommandGroup(replacing: .appTermination) {
+                Button("退出 Claude 切换器") { NSApplication.shared.terminate(nil) }
+                    .keyboardShortcut("q")
+                    .disabled(!vm.canQuit)
+            }
+        }
+    }
+}
+
+#if !CLAUDE_SWITCHER_TESTS
 @main
 struct SwitcherApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     var body: some Scene {
-        WindowGroup {
-            ContentView()
-                .background(WindowAccessor { win in
-                    guard let w = win else { return }
-                    w.titlebarAppearsTransparent = true
-                    w.titleVisibility = .hidden
-                    w.styleMask.insert(.fullSizeContentView)
-                    w.isMovableByWindowBackground = true
-                    w.standardWindowButton(.zoomButton)?.isEnabled = false
-                })
-        }
-        .windowStyle(.hiddenTitleBar)
-        .windowResizability(.contentSize)
+        SwitcherMenu(vm: appDelegate.vm, controller: appDelegate)
     }
 }
-
-struct WindowAccessor: NSViewRepresentable {
-    let cb: (NSWindow?) -> Void
-    func makeNSView(context: Context) -> NSView {
-        let v = NSView()
-        DispatchQueue.main.async { self.cb(v.window) }
-        return v
-    }
-    func updateNSView(_ nsView: NSView, context: Context) {}
-}
+#endif
